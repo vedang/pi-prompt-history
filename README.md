@@ -5,7 +5,7 @@ search extension.
 
 ## Purpose
 
-- Define a stable module layout for prompt indexing, parsing, search, and selector UI.
+- Define a stable module layout for prompt history parsing, indexing, and search.
 - Keep the structure discoverable by `pi` extension loading.
 - Keep implementation intentionally out-of-scope for this commit; behavior is added in
   follow-up tasks.
@@ -24,9 +24,9 @@ search extension.
 ## Dependency intent
 
 - `fzf`: fuzzy ranking for interactive prompt selection.
-- `sqlite` / `sqlite3`: SQLite storage for fast local/global history search.
+- `node:sqlite`: built-in SQLite backend for fast local/global history search.
 
 ## Status
 
-This scaffold contains no functional behavior yet. Commands, UI wiring, parsing,
-indexing, and ranking are intentionally deferred to later commits.
+This scaffold contains no functional behavior yet. Commands, UI wiring, search,
+and ranking are intentionally deferred to later commits.

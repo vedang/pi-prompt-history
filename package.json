@@ -7,8 +7,6 @@
   "main": "index.ts",
   "keywords": ["pi", "extension", "prompt-history", "fzf", "sqlite"],
   "dependencies": {
-    "fzf": "^0.5.1",
-    "sqlite": "^4.2.1",
-    "sqlite3": "^5.1.7"
+    "fzf": "^0.5.1"
   }
 }
