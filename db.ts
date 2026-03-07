@@ -1,6 +1,6 @@
+import { execFileSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 
 import { expandHomePath } from "./config";
 import type { SearchScope } from "./search";
@@ -30,6 +30,19 @@ export interface IndexedSessionMetadata {
 	indexedSizeBytes: number;
 	indexedPromptCount: number;
 	lastIndexedAtMs: number;
+}
+
+export interface InsertablePromptHistoryEntry {
+	sessionFile: string;
+	entryId: string;
+	parentId: string | null;
+	sessionName: string;
+	cwd: string;
+	promptTimestampMs: number;
+	ordinalInSession: number;
+	text: string;
+	preview: string;
+	contentHash: string;
 }
 
 export interface PromptHistoryStats {
@@ -64,6 +77,16 @@ interface PromptRow {
 	prompt_timestamp_ms: number;
 }
 
+const toSqlValue = (value: number | string | null): string => {
+	if (value === null) {
+		return "NULL";
+	}
+	if (typeof value === "number") {
+		return Number.isFinite(value) ? `${value}` : "NULL";
+	}
+	return `'${value.replaceAll("'", "''")}'`;
+};
+
 const mapPromptRow = (row: PromptRow): PromptHistoryEntry => ({
 	id: row.id,
 	sessionFile: row.session_file,
@@ -75,19 +98,149 @@ const mapPromptRow = (row: PromptRow): PromptHistoryEntry => ({
 });
 
 export class PromptHistoryDb {
-	private readonly db: DatabaseSync;
+	private readonly dbPath: string;
 
 	constructor(config: PromptHistoryDbConfig) {
-		const resolvedPath = expandHomePath(config.path);
-		mkdirSync(dirname(resolvedPath), { recursive: true });
-
-		this.db = new DatabaseSync(resolvedPath);
-		this.db.exec("PRAGMA foreign_keys = ON;");
+		this.dbPath = expandHomePath(config.path);
+		mkdirSync(dirname(this.dbPath), { recursive: true });
 		this.prepareSchema();
 	}
 
+	close(): void {
+		// sqlite3 CLI invocations are one-shot, so there is no persistent connection to close.
+	}
+
+	getIndexedSession(sessionFile: string): IndexedSessionMetadata | null {
+		const row = this.queryOne<SessionRow>(
+			`SELECT session_file, session_name, cwd, indexed_mtime_ms, indexed_size_bytes, indexed_prompt_count, last_indexed_at_ms FROM sessions WHERE session_file = ${toSqlValue(sessionFile)}`,
+		);
+		if (!row) {
+			return null;
+		}
+
+		return {
+			sessionFile: row.session_file,
+			sessionName: row.session_name ?? "",
+			cwd: row.cwd,
+			indexedMtimeMs: row.indexed_mtime_ms,
+			indexedSizeBytes: row.indexed_size_bytes,
+			indexedPromptCount: row.indexed_prompt_count,
+			lastIndexedAtMs: row.last_indexed_at_ms,
+		};
+	}
+
+	upsertSession(metadata: IndexedSessionMetadata): void {
+		this.exec(
+			`INSERT INTO sessions (session_file, cwd, session_name, indexed_mtime_ms, indexed_size_bytes, indexed_prompt_count, last_indexed_at_ms)
+			 VALUES (${toSqlValue(metadata.sessionFile)}, ${toSqlValue(metadata.cwd)}, ${toSqlValue(metadata.sessionName)}, ${toSqlValue(metadata.indexedMtimeMs)}, ${toSqlValue(metadata.indexedSizeBytes)}, ${toSqlValue(metadata.indexedPromptCount)}, ${toSqlValue(metadata.lastIndexedAtMs)})
+			 ON CONFLICT(session_file) DO UPDATE SET
+			   cwd = excluded.cwd,
+			   session_name = excluded.session_name,
+			   indexed_mtime_ms = excluded.indexed_mtime_ms,
+			   indexed_size_bytes = excluded.indexed_size_bytes,
+			   indexed_prompt_count = excluded.indexed_prompt_count,
+			   last_indexed_at_ms = excluded.last_indexed_at_ms;`,
+		);
+	}
+
+	clearSessionPrompts(sessionFile: string): number {
+		const row = this.queryOne<{ changes: number }>(
+			`DELETE FROM prompts WHERE session_file = ${toSqlValue(sessionFile)};
+			 SELECT changes() AS changes;`,
+		);
+		return row?.changes ?? 0;
+	}
+
+	insertPrompts(
+		prompts: InsertablePromptHistoryEntry[],
+		indexedAtMs: number,
+	): number {
+		if (prompts.length === 0) {
+			return 0;
+		}
+
+		const statements = prompts.map((prompt) => {
+			return `INSERT OR IGNORE INTO prompts (
+				session_file,
+				entry_id,
+				parent_id,
+				cwd,
+				session_name,
+				prompt_timestamp_ms,
+				ordinal_in_session,
+				text,
+				preview,
+				content_hash,
+				indexed_at_ms
+			) VALUES (
+				${toSqlValue(prompt.sessionFile)},
+				${toSqlValue(prompt.entryId)},
+				${toSqlValue(prompt.parentId)},
+				${toSqlValue(prompt.cwd)},
+				${toSqlValue(prompt.sessionName)},
+				${toSqlValue(prompt.promptTimestampMs)},
+				${toSqlValue(prompt.ordinalInSession)},
+				${toSqlValue(prompt.text)},
+				${toSqlValue(prompt.preview)},
+				${toSqlValue(prompt.contentHash)},
+				${toSqlValue(indexedAtMs)}
+			);`;
+		});
+
+		const row = this.queryOne<{ changes: number }>(
+			`BEGIN;
+			 ${statements.join("\n")}
+			 SELECT total_changes() AS changes;
+			 COMMIT;`,
+		);
+		return row?.changes ?? 0;
+	}
+
+	listRecentPrompts(options: ListRecentPromptsOptions): PromptHistoryEntry[] {
+		const sql =
+			options.scope === "global"
+				? `SELECT entry_id AS id, session_file, session_name, preview, text, cwd, prompt_timestamp_ms FROM prompts ORDER BY prompt_timestamp_ms DESC, ordinal_in_session DESC LIMIT ${toSqlValue(options.limit)}`
+				: `SELECT entry_id AS id, session_file, session_name, preview, text, cwd, prompt_timestamp_ms FROM prompts WHERE cwd = ${toSqlValue(options.cwd)} ORDER BY prompt_timestamp_ms DESC, ordinal_in_session DESC LIMIT ${toSqlValue(options.limit)}`;
+
+		return this.queryAll<PromptRow>(sql).map(mapPromptRow);
+	}
+
+	getStats(options: { scope: SearchScope; cwd: string }): PromptHistoryStats {
+		const promptRow =
+			options.scope === "global"
+				? this.queryOne<{ promptCount: number }>(
+						"SELECT COUNT(*) AS promptCount FROM prompts",
+					)
+				: this.queryOne<{ promptCount: number }>(
+						// [ref:prompt_history_local_scope_exact_cwd]
+						`SELECT COUNT(*) AS promptCount FROM prompts WHERE cwd = ${toSqlValue(options.cwd)}`,
+					);
+		const sessionRow =
+			options.scope === "global"
+				? this.queryOne<{ sessionCount: number }>(
+						"SELECT COUNT(*) AS sessionCount FROM sessions",
+					)
+				: this.queryOne<{ sessionCount: number }>(
+						// [ref:prompt_history_local_scope_exact_cwd]
+						`SELECT COUNT(*) AS sessionCount FROM sessions WHERE cwd = ${toSqlValue(options.cwd)}`,
+					);
+
+		return {
+			promptCount: promptRow?.promptCount ?? 0,
+			sessionCount: sessionRow?.sessionCount ?? 0,
+		};
+	}
+
+	getSessionPromptCount(sessionFile: string): number {
+		const row = this.queryOne<{ promptCount: number }>(
+			`SELECT COUNT(*) AS promptCount FROM prompts WHERE session_file = ${toSqlValue(sessionFile)}`,
+		);
+		return row?.promptCount ?? 0;
+	}
+
 	private prepareSchema(): void {
-		this.db.exec(`
+		this.exec(`
+			PRAGMA foreign_keys = ON;
 			CREATE TABLE IF NOT EXISTS sessions (
 				session_file TEXT PRIMARY KEY,
 				cwd TEXT NOT NULL,
@@ -123,156 +276,21 @@ export class PromptHistoryDb {
 		`);
 	}
 
-	close(): void {
-		this.db.close();
+	private exec(sql: string): void {
+		execFileSync("sqlite3", [this.dbPath, sql], { encoding: "utf8" });
 	}
 
-	getIndexedSession(sessionFile: string): IndexedSessionMetadata | null {
-		const row = this.db
-			.prepare(
-				"SELECT session_file, session_name, cwd, indexed_mtime_ms, indexed_size_bytes, indexed_prompt_count, last_indexed_at_ms FROM sessions WHERE session_file = ?",
-			)
-			.get(sessionFile) as SessionRow | undefined;
-
-		if (!row) {
-			return null;
+	private queryAll<T>(sql: string): T[] {
+		const output = execFileSync("sqlite3", ["-json", this.dbPath, sql], {
+			encoding: "utf8",
+		}).trim();
+		if (!output) {
+			return [];
 		}
-
-		return {
-			sessionFile: row.session_file,
-			sessionName: row.session_name ?? "",
-			cwd: row.cwd,
-			indexedMtimeMs: row.indexed_mtime_ms,
-			indexedSizeBytes: row.indexed_size_bytes,
-			indexedPromptCount: row.indexed_prompt_count,
-			lastIndexedAtMs: row.last_indexed_at_ms,
-		};
+		return JSON.parse(output) as T[];
 	}
 
-	upsertSession(metadata: IndexedSessionMetadata): void {
-		this.db
-			.prepare(
-				"INSERT INTO sessions (session_file, cwd, session_name, indexed_mtime_ms, indexed_size_bytes, indexed_prompt_count, last_indexed_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(session_file) DO UPDATE SET cwd = excluded.cwd, session_name = excluded.session_name, indexed_mtime_ms = excluded.indexed_mtime_ms, indexed_size_bytes = excluded.indexed_size_bytes, indexed_prompt_count = excluded.indexed_prompt_count, last_indexed_at_ms = excluded.last_indexed_at_ms",
-			)
-			.run(
-				metadata.sessionFile,
-				metadata.cwd,
-				metadata.sessionName,
-				metadata.indexedMtimeMs,
-				metadata.indexedSizeBytes,
-				metadata.indexedPromptCount,
-				metadata.lastIndexedAtMs,
-			);
-	}
-
-	clearSessionPrompts(sessionFile: string): number {
-		return this.db
-			.prepare("DELETE FROM prompts WHERE session_file = ?")
-			.run(sessionFile).changes;
-	}
-
-	insertPrompt(
-		prompt: {
-			sessionFile: string;
-			entryId: string;
-			parentId: string | null;
-			sessionName: string;
-			cwd: string;
-			promptTimestampMs: number;
-			ordinalInSession: number;
-			text: string;
-			preview: string;
-			contentHash: string;
-		},
-		indexedAtMs: number,
-	): number {
-		return this.db
-			.prepare(`
-				INSERT OR IGNORE INTO prompts (
-					session_file,
-					entry_id,
-					parent_id,
-					cwd,
-					session_name,
-					prompt_timestamp_ms,
-					ordinal_in_session,
-					text,
-					preview,
-					content_hash,
-					indexed_at_ms
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-			`)
-			.run(
-				prompt.sessionFile,
-				prompt.entryId,
-				prompt.parentId,
-				prompt.cwd,
-				prompt.sessionName,
-				prompt.promptTimestampMs,
-				prompt.ordinalInSession,
-				prompt.text,
-				prompt.preview,
-				prompt.contentHash,
-				indexedAtMs,
-			).changes;
-	}
-
-	listRecentPrompts(options: ListRecentPromptsOptions): PromptHistoryEntry[] {
-		const rows =
-			options.scope === "global"
-				? (this.db
-						.prepare(
-							"SELECT entry_id AS id, session_file, session_name, preview, text, cwd, prompt_timestamp_ms FROM prompts ORDER BY prompt_timestamp_ms DESC, ordinal_in_session DESC LIMIT ?",
-						)
-						.all(options.limit) as PromptRow[])
-				: (this.db
-						.prepare(
-							// [ref:prompt_history_local_scope_exact_cwd]
-							"SELECT entry_id AS id, session_file, session_name, preview, text, cwd, prompt_timestamp_ms FROM prompts WHERE cwd = ? ORDER BY prompt_timestamp_ms DESC, ordinal_in_session DESC LIMIT ?",
-						)
-						.all(options.cwd, options.limit) as PromptRow[]);
-
-		return rows.map(mapPromptRow);
-	}
-
-	getStats(options: { scope: SearchScope; cwd: string }): PromptHistoryStats {
-		const promptRow =
-			options.scope === "global"
-				? (this.db
-						.prepare("SELECT COUNT(*) AS promptCount FROM prompts")
-						.get() as { promptCount: number } | undefined)
-				: (this.db
-						.prepare(
-							// [ref:prompt_history_local_scope_exact_cwd]
-							"SELECT COUNT(*) AS promptCount FROM prompts WHERE cwd = ?",
-						)
-						.get(options.cwd) as { promptCount: number } | undefined);
-
-		const sessionRow =
-			options.scope === "global"
-				? (this.db
-						.prepare("SELECT COUNT(*) AS sessionCount FROM sessions")
-						.get() as { sessionCount: number } | undefined)
-				: (this.db
-						.prepare(
-							// [ref:prompt_history_local_scope_exact_cwd]
-							"SELECT COUNT(*) AS sessionCount FROM sessions WHERE cwd = ?",
-						)
-						.get(options.cwd) as { sessionCount: number } | undefined);
-
-		return {
-			promptCount: promptRow?.promptCount ?? 0,
-			sessionCount: sessionRow?.sessionCount ?? 0,
-		};
-	}
-
-	getSessionPromptCount(sessionFile: string): number {
-		const row = this.db
-			.prepare(
-				"SELECT COUNT(*) AS promptCount FROM prompts WHERE session_file = ?",
-			)
-			.get(sessionFile) as { promptCount: number } | undefined;
-
-		return row?.promptCount ?? 0;
+	private queryOne<T>(sql: string): T | undefined {
+		return this.queryAll<T>(sql)[0];
 	}
 }

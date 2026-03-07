@@ -34,7 +34,7 @@ search them with a floating overlay.
 
 - Session source: `~/.pi/agent/sessions/`
 - Prompt-history DB: `~/.pi/agent/prompt-history/history.db`
-- Backend: built-in `node:sqlite` (zero extra runtime install)
+- Backend: `sqlite3` CLI (widely available, zero npm runtime dependency)
 
 The indexer:
 - parses pi session JSONL files

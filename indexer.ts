@@ -196,26 +196,21 @@ const indexPrompts = (
 	prompts: ParsedSessionPrompt[],
 	sessionName: string,
 ): number =>
-	prompts.reduce((total, prompt) => {
-		return (
-			total +
-			db.insertPrompt(
-				{
-					sessionFile: prompt.sessionFile,
-					entryId: prompt.entryId,
-					parentId: prompt.parentId,
-					sessionName,
-					cwd: prompt.cwd,
-					promptTimestampMs: prompt.promptTimestampMs,
-					ordinalInSession: prompt.ordinalInSession,
-					text: prompt.text,
-					preview: prompt.preview,
-					contentHash: prompt.contentHash,
-				},
-				Date.now(),
-			)
-		);
-	}, 0);
+	db.insertPrompts(
+		prompts.map((prompt) => ({
+			sessionFile: prompt.sessionFile,
+			entryId: prompt.entryId,
+			parentId: prompt.parentId,
+			sessionName,
+			cwd: prompt.cwd,
+			promptTimestampMs: prompt.promptTimestampMs,
+			ordinalInSession: prompt.ordinalInSession,
+			text: prompt.text,
+			preview: prompt.preview,
+			contentHash: prompt.contentHash,
+		})),
+		Date.now(),
+	);
 
 const statSessionFile = (
 	path: string,
