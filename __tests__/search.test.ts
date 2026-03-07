@@ -181,3 +181,35 @@ test("searchPrompts respects local scope when filtering results", async () => {
 
 	db.close();
 });
+
+test("searchPrompts can find older prompts outside the recent candidate window", async () => {
+	const dir = createTempDir();
+	const db = new PromptHistoryDb({ path: join(dir, "history.db") });
+	const sessionFile = join(dir, "session-many.jsonl");
+
+	const lines = [sessionHeader("/tmp/project-many")];
+	for (let index = 0; index < 520; index += 1) {
+		lines.push(
+			userMessage(
+				`m${index + 1}`,
+				index === 0 ? null : `m${index}`,
+				`2026-03-07T00:00:${String(index % 60).padStart(2, "0")}.000Z`,
+				index === 0 ? "rare needle prompt" : `ordinary prompt ${index}`,
+				index + 1,
+			),
+		);
+	}
+	writeSession(sessionFile, lines);
+
+	await indexSessionFile(db, sessionFile);
+
+	const results = await searchPrompts(db, {
+		scope: "local",
+		cwd: "/tmp/project-many",
+		query: "needle",
+		limit: 10,
+	});
+	assert.equal(results[0]?.text, "rare needle prompt");
+
+	db.close();
+});

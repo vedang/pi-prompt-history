@@ -57,8 +57,12 @@ export async function indexSessionFile(
 		};
 	}
 
-	const parsedSession = await parseSessionFile(sessionFile);
-	if (parsedSession === null) {
+	if (
+		!options.forceRebuild &&
+		existingSession &&
+		existingSession.indexedSizeBytes === fileStats.size &&
+		existingSession.indexedMtimeMs === fileStats.mtimeMs
+	) {
 		return {
 			action: "skipped",
 			indexedPrompts: 0,
@@ -66,12 +70,8 @@ export async function indexSessionFile(
 		};
 	}
 
-	if (
-		!options.forceRebuild &&
-		existingSession &&
-		existingSession.indexedSizeBytes === fileStats.size &&
-		existingSession.indexedMtimeMs === fileStats.mtimeMs
-	) {
+	const parsedSession = await parseSessionFile(sessionFile);
+	if (parsedSession === null) {
 		return {
 			action: "skipped",
 			indexedPrompts: 0,

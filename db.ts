@@ -205,6 +205,18 @@ export class PromptHistoryDb {
 		return this.queryAll<PromptRow>(sql).map(mapPromptRow);
 	}
 
+	listPromptCandidates(options: {
+		scope: SearchScope;
+		cwd: string;
+	}): PromptHistoryEntry[] {
+		const sql =
+			options.scope === "global"
+				? "SELECT entry_id AS id, session_file, session_name, preview, text, cwd, prompt_timestamp_ms FROM prompts ORDER BY prompt_timestamp_ms DESC, ordinal_in_session DESC"
+				: `SELECT entry_id AS id, session_file, session_name, preview, text, cwd, prompt_timestamp_ms FROM prompts WHERE cwd = ${toSqlValue(options.cwd)} ORDER BY prompt_timestamp_ms DESC, ordinal_in_session DESC`;
+
+		return this.queryAll<PromptRow>(sql).map(mapPromptRow);
+	}
+
 	getStats(options: { scope: SearchScope; cwd: string }): PromptHistoryStats {
 		const promptRow =
 			options.scope === "global"

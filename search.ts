@@ -28,7 +28,6 @@ interface FuzzyMatch {
 }
 
 const DEFAULT_LIMIT = 10;
-const MAX_CANDIDATES = 500;
 const EXACT_MATCH_BONUS = 100_000;
 const FUZZY_BASE_SCORE = 1_000;
 
@@ -41,6 +40,10 @@ export async function searchPrompts(
 			scope: SearchScope;
 			cwd: string;
 			limit: number;
+		}) => PromptHistoryEntry[];
+		listPromptCandidates?: (options: {
+			scope: SearchScope;
+			cwd: string;
 		}) => PromptHistoryEntry[];
 	},
 	options: SearchOptions,
@@ -62,11 +65,16 @@ export async function searchPrompts(
 			}));
 	}
 
-	const candidates = db.listRecentPrompts({
-		scope: options.scope,
-		cwd: options.cwd,
-		limit: Math.max(MAX_CANDIDATES, limit * 50),
-	});
+	const candidates = db.listPromptCandidates
+		? db.listPromptCandidates({
+				scope: options.scope,
+				cwd: options.cwd,
+			})
+		: db.listRecentPrompts({
+				scope: options.scope,
+				cwd: options.cwd,
+				limit: Math.max(1_000, limit * 100),
+			});
 
 	const normalizedQuery = query.toLowerCase();
 	const scoredCandidates = candidates
