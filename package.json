@@ -5,8 +5,5 @@
   "description": "Scaffold for Ctrl-R prompt history search extension.",
   "type": "module",
   "main": "index.ts",
-  "keywords": ["pi", "extension", "prompt-history", "fzf", "sqlite"],
-  "dependencies": {
-    "fzf": "^0.5.1"
-  }
+  "keywords": ["pi", "extension", "prompt-history", "sqlite"]
 }
