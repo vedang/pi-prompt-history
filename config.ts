@@ -1,27 +1,36 @@
+import { homedir } from "node:os";
+import { resolve } from "node:path";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 
-/**
- * Shared configuration scaffold for the prompt history extension.
- *
- * Populated in later tasks when runtime knobs are finalized.
- */
 export const DEFAULT_HISTORY_DB_PATH =
 	"~/.pi/agent/prompt-history/history.db" as const;
+export const DEFAULT_SESSION_DIR = "~/.pi/agent/sessions" as const;
+export const DEFAULT_MAX_RESULTS = 20;
 
 export type PromptHistoryConfig = {
-	dbPath?: string;
-	maxResults?: number;
-	localMode?: "cwd";
+	dbPath: string;
+	sessionDir: string;
+	maxResults: number;
+	localMode: "cwd";
 };
 
+export function expandHomePath(inputPath: string): string {
+	if (!inputPath.startsWith("~")) {
+		return resolve(inputPath);
+	}
+
+	return resolve(inputPath.replace(/^~(?=$|\/)/, homedir()));
+}
+
 export function initializePromptHistoryConfig(_ctx?: ExtensionContext): void {
-	// Intentionally no-op placeholder for now.
+	// Reserved for future user/project config hydration.
 }
 
 export function resolvePromptHistoryConfig(): PromptHistoryConfig {
 	return {
 		dbPath: DEFAULT_HISTORY_DB_PATH,
-		maxResults: 200,
+		sessionDir: DEFAULT_SESSION_DIR,
+		maxResults: DEFAULT_MAX_RESULTS,
 		localMode: "cwd",
 	};
 }

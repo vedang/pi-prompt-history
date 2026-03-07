@@ -1,7 +1,9 @@
 import { mkdirSync } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, resolve } from "node:path";
+import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+
+import { expandHomePath } from "./config";
+import type { SearchScope } from "./search";
 
 /**
  * Database module for prompt history indexing.
@@ -13,6 +15,8 @@ export interface PromptHistoryDbConfig {
 export interface PromptHistoryEntry {
 	id: string;
 	sessionFile: string;
+	sessionName: string;
+	preview: string;
 	text: string;
 	cwd: string;
 	timestampMs: number;
@@ -28,8 +32,14 @@ export interface IndexedSessionMetadata {
 	lastIndexedAtMs: number;
 }
 
+export interface PromptHistoryStats {
+	sessionCount: number;
+	promptCount: number;
+}
+
 export interface ListRecentPromptsOptions {
-	scope: "local" | "global";
+	// [tag:prompt_history_local_scope_exact_cwd] Local prompt history intentionally uses exact cwd equality.
+	scope: SearchScope;
 	cwd: string;
 	limit: number;
 }
@@ -47,26 +57,29 @@ interface SessionRow {
 interface PromptRow {
 	id: string;
 	session_file: string;
+	session_name: string | null;
+	preview: string;
 	text: string;
 	cwd: string;
 	prompt_timestamp_ms: number;
 }
 
-const expandHome = (inputPath: string): string => {
-	if (!inputPath.startsWith("~")) {
-		return resolve(inputPath);
-	}
-
-	return resolve(inputPath.replace(/^~(?=$|\/)/, homedir()));
-};
+const mapPromptRow = (row: PromptRow): PromptHistoryEntry => ({
+	id: row.id,
+	sessionFile: row.session_file,
+	sessionName: row.session_name ?? "",
+	preview: row.preview,
+	text: row.text,
+	cwd: row.cwd,
+	timestampMs: row.prompt_timestamp_ms,
+});
 
 export class PromptHistoryDb {
 	private readonly db: DatabaseSync;
 
 	constructor(config: PromptHistoryDbConfig) {
-		const resolvedPath = expandHome(config.path);
-		const directory = dirname(resolvedPath);
-		mkdirSync(directory, { recursive: true });
+		const resolvedPath = expandHomePath(config.path);
+		mkdirSync(dirname(resolvedPath), { recursive: true });
 
 		this.db = new DatabaseSync(resolvedPath);
 		this.db.exec("PRAGMA foreign_keys = ON;");
@@ -102,11 +115,11 @@ export class PromptHistoryDb {
 				UNIQUE(session_file, entry_id)
 			);
 
-			CREATE INDEX IF NOT EXISTS prompts_session_time_idx
-				ON prompts(session_file, prompt_timestamp_ms DESC, ordinal_in_session DESC);
-
 			CREATE INDEX IF NOT EXISTS prompts_recent_idx
 				ON prompts(cwd, prompt_timestamp_ms DESC, ordinal_in_session DESC);
+
+			CREATE INDEX IF NOT EXISTS prompts_global_recent_idx
+				ON prompts(prompt_timestamp_ms DESC, ordinal_in_session DESC);
 		`);
 	}
 
@@ -173,35 +186,35 @@ export class PromptHistoryDb {
 		},
 		indexedAtMs: number,
 	): number {
-		const statement = this.db.prepare(`
-			INSERT OR IGNORE INTO prompts (
-				session_file,
-				entry_id,
-				parent_id,
-				cwd,
-				session_name,
-				prompt_timestamp_ms,
-				ordinal_in_session,
-				text,
-				preview,
-				content_hash,
-				indexed_at_ms
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		`);
-
-		return statement.run(
-			prompt.sessionFile,
-			prompt.entryId,
-			prompt.parentId,
-			prompt.cwd,
-			prompt.sessionName,
-			prompt.promptTimestampMs,
-			prompt.ordinalInSession,
-			prompt.text,
-			prompt.preview,
-			prompt.contentHash,
-			indexedAtMs,
-		).changes;
+		return this.db
+			.prepare(`
+				INSERT OR IGNORE INTO prompts (
+					session_file,
+					entry_id,
+					parent_id,
+					cwd,
+					session_name,
+					prompt_timestamp_ms,
+					ordinal_in_session,
+					text,
+					preview,
+					content_hash,
+					indexed_at_ms
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			`)
+			.run(
+				prompt.sessionFile,
+				prompt.entryId,
+				prompt.parentId,
+				prompt.cwd,
+				prompt.sessionName,
+				prompt.promptTimestampMs,
+				prompt.ordinalInSession,
+				prompt.text,
+				prompt.preview,
+				prompt.contentHash,
+				indexedAtMs,
+			).changes;
 	}
 
 	listRecentPrompts(options: ListRecentPromptsOptions): PromptHistoryEntry[] {
@@ -209,22 +222,48 @@ export class PromptHistoryDb {
 			options.scope === "global"
 				? (this.db
 						.prepare(
-							"SELECT entry_id AS id, session_file, text, cwd, prompt_timestamp_ms FROM prompts ORDER BY prompt_timestamp_ms DESC, ordinal_in_session DESC LIMIT ?",
+							"SELECT entry_id AS id, session_file, session_name, preview, text, cwd, prompt_timestamp_ms FROM prompts ORDER BY prompt_timestamp_ms DESC, ordinal_in_session DESC LIMIT ?",
 						)
 						.all(options.limit) as PromptRow[])
 				: (this.db
 						.prepare(
-							"SELECT entry_id AS id, session_file, text, cwd, prompt_timestamp_ms FROM prompts WHERE cwd = ? ORDER BY prompt_timestamp_ms DESC, ordinal_in_session DESC LIMIT ?",
+							// [ref:prompt_history_local_scope_exact_cwd]
+							"SELECT entry_id AS id, session_file, session_name, preview, text, cwd, prompt_timestamp_ms FROM prompts WHERE cwd = ? ORDER BY prompt_timestamp_ms DESC, ordinal_in_session DESC LIMIT ?",
 						)
 						.all(options.cwd, options.limit) as PromptRow[]);
 
-		return rows.map((row) => ({
-			id: row.id,
-			sessionFile: row.session_file,
-			text: row.text,
-			cwd: row.cwd,
-			timestampMs: row.prompt_timestamp_ms,
-		}));
+		return rows.map(mapPromptRow);
+	}
+
+	getStats(options: { scope: SearchScope; cwd: string }): PromptHistoryStats {
+		const promptRow =
+			options.scope === "global"
+				? (this.db
+						.prepare("SELECT COUNT(*) AS promptCount FROM prompts")
+						.get() as { promptCount: number } | undefined)
+				: (this.db
+						.prepare(
+							// [ref:prompt_history_local_scope_exact_cwd]
+							"SELECT COUNT(*) AS promptCount FROM prompts WHERE cwd = ?",
+						)
+						.get(options.cwd) as { promptCount: number } | undefined);
+
+		const sessionRow =
+			options.scope === "global"
+				? (this.db
+						.prepare("SELECT COUNT(*) AS sessionCount FROM sessions")
+						.get() as { sessionCount: number } | undefined)
+				: (this.db
+						.prepare(
+							// [ref:prompt_history_local_scope_exact_cwd]
+							"SELECT COUNT(*) AS sessionCount FROM sessions WHERE cwd = ?",
+						)
+						.get(options.cwd) as { sessionCount: number } | undefined);
+
+		return {
+			promptCount: promptRow?.promptCount ?? 0,
+			sessionCount: sessionRow?.sessionCount ?? 0,
+		};
 	}
 
 	getSessionPromptCount(sessionFile: string): number {

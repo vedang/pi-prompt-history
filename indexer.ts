@@ -1,14 +1,20 @@
-import { statSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
 
+import type { PromptHistoryDb } from "./db";
 import type { ParsedSession, ParsedSessionPrompt } from "./parser";
 import { parseSessionFile } from "./parser";
-import type { PromptHistoryDb } from "./db";
 
 export type IndexerAction = "created" | "updated" | "rebuilt" | "skipped";
 
 export interface IndexerResult {
 	action: IndexerAction;
 	indexedPrompts: number;
+	sessionFile?: string;
+}
+
+export interface IndexSessionFileOptions {
+	forceRebuild?: boolean;
 }
 
 export async function indexSession(
@@ -30,33 +36,24 @@ export async function indexSession(
 	return {
 		action: indexedPrompts > 0 ? "updated" : "skipped",
 		indexedPrompts,
+		sessionFile: session.file,
 	};
 }
 
 export async function indexSessionFile(
 	db: PromptHistoryDb,
 	sessionFile: string,
+	options: IndexSessionFileOptions = {},
 ): Promise<IndexerResult> {
 	const existingSession = db.getIndexedSession(sessionFile);
 	const fileStats = statSessionFile(sessionFile);
 
 	if (fileStats === null) {
 		db.clearSessionPrompts(sessionFile);
-		if (existingSession) {
-			db.upsertSession({
-				sessionFile,
-				cwd: existingSession.cwd,
-				sessionName: existingSession.sessionName,
-				indexedMtimeMs: 0,
-				indexedSizeBytes: 0,
-				indexedPromptCount: 0,
-				lastIndexedAtMs: Date.now(),
-			});
-		}
-
 		return {
 			action: "skipped",
 			indexedPrompts: 0,
+			sessionFile,
 		};
 	}
 
@@ -65,10 +62,12 @@ export async function indexSessionFile(
 		return {
 			action: "skipped",
 			indexedPrompts: 0,
+			sessionFile,
 		};
 	}
 
 	if (
+		!options.forceRebuild &&
 		existingSession &&
 		existingSession.indexedSizeBytes === fileStats.size &&
 		existingSession.indexedMtimeMs === fileStats.mtimeMs
@@ -76,6 +75,7 @@ export async function indexSessionFile(
 		return {
 			action: "skipped",
 			indexedPrompts: 0,
+			sessionFile,
 		};
 	}
 
@@ -90,44 +90,106 @@ export async function indexSessionFile(
 	});
 
 	if (!existingSession) {
-		const indexedPrompts = indexPrompts(
-			db,
-			parsedSession.prompts,
-			parsedSession.sessionName,
-		);
-
 		return {
 			action: "created",
-			indexedPrompts,
+			indexedPrompts: indexPrompts(
+				db,
+				parsedSession.prompts,
+				parsedSession.sessionName,
+			),
+			sessionFile,
 		};
 	}
 
-	const shouldRebuild = fileStats.size < existingSession.indexedSizeBytes;
+	const shouldRebuild =
+		options.forceRebuild || fileStats.size < existingSession.indexedSizeBytes;
 	if (shouldRebuild) {
 		db.clearSessionPrompts(sessionFile);
-		const indexedPrompts = indexPrompts(
-			db,
-			parsedSession.prompts,
-			parsedSession.sessionName,
-		);
-
 		return {
 			action: "rebuilt",
-			indexedPrompts,
+			indexedPrompts: indexPrompts(
+				db,
+				parsedSession.prompts,
+				parsedSession.sessionName,
+			),
+			sessionFile,
 		};
 	}
-
-	const indexedPrompts = indexPrompts(
-		db,
-		parsedSession.prompts,
-		parsedSession.sessionName,
-	);
 
 	return {
 		action: "updated",
-		indexedPrompts,
+		indexedPrompts: indexPrompts(
+			db,
+			parsedSession.prompts,
+			parsedSession.sessionName,
+		),
+		sessionFile,
 	};
 }
+
+export async function indexSessionFiles(
+	db: PromptHistoryDb,
+	sessionFiles: string[],
+	options: IndexSessionFileOptions = {},
+): Promise<IndexerResult[]> {
+	const results: IndexerResult[] = [];
+	for (const sessionFile of sessionFiles) {
+		results.push(await indexSessionFile(db, sessionFile, options));
+	}
+	return results;
+}
+
+export function discoverSessionFiles(sessionDir: string): string[] {
+	const results: string[] = [];
+	for (const entry of walkEntries(sessionDir)) {
+		if (entry.endsWith(".jsonl")) {
+			results.push(entry);
+		}
+	}
+	return results.sort();
+}
+
+export function filterSessionFilesByCwd(
+	sessionFiles: string[],
+	cwd: string,
+): string[] {
+	return sessionFiles.filter((sessionFile) => {
+		return readSessionHeaderCwd(sessionFile) === cwd;
+	});
+}
+
+const walkEntries = (rootDir: string): string[] => {
+	try {
+		const entries = readdirSync(rootDir, { withFileTypes: true });
+		return entries.flatMap((entry) => {
+			const path = join(rootDir, entry.name);
+			if (entry.isDirectory()) {
+				return walkEntries(path);
+			}
+			return [path];
+		});
+	} catch {
+		return [];
+	}
+};
+
+const readSessionHeaderCwd = (sessionFile: string): string | undefined => {
+	try {
+		const firstLine = readFileSync(sessionFile, "utf-8")
+			.split("\n", 1)[0]
+			?.trim();
+		if (!firstLine) {
+			return undefined;
+		}
+		const header = JSON.parse(firstLine) as { type?: unknown; cwd?: unknown };
+		if (header.type !== "session" || typeof header.cwd !== "string") {
+			return undefined;
+		}
+		return header.cwd;
+	} catch {
+		return undefined;
+	}
+};
 
 const indexPrompts = (
 	db: PromptHistoryDb,

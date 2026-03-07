@@ -31,11 +31,8 @@ test("prompt-history scaffold files exist", () => {
 	}
 });
 
-test("index.ts wire-up is currently placeholder-only", () => {
+test("index.ts delegates prompt-history setup through commands + config modules", () => {
 	const source = readFileSync(join(extensionDir, "index.ts"), "utf-8");
-	assert.match(source, /Prompt History extension scaffold/);
 	assert.match(source, /registerPromptHistoryCommands/);
 	assert.match(source, /initializePromptHistoryConfig/);
-	assert.doesNotMatch(source, /registerShortcut/);
-	assert.doesNotMatch(source, /registerCommand/);
 });
