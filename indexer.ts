@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
-import type { PromptHistoryDb } from "./db";
+import type { IndexedSessionMetadata, PromptHistoryDb } from "./db";
 import type { ParsedSession, ParsedSessionPrompt } from "./parser";
 import { parseSessionFile } from "./parser";
 
@@ -17,12 +17,16 @@ export interface IndexSessionFileOptions {
 	forceRebuild?: boolean;
 }
 
+interface SessionFileStats {
+	size: number;
+	mtimeMs: number;
+}
+
 export async function indexSession(
 	db: PromptHistoryDb,
 	session: ParsedSession,
 ): Promise<IndexerResult> {
-	const indexedPrompts = indexPrompts(db, session.prompts, session.sessionName);
-
+	const indexedAtMs = Date.now();
 	db.upsertSession({
 		sessionFile: session.file,
 		cwd: session.cwd,
@@ -30,14 +34,20 @@ export async function indexSession(
 		indexedMtimeMs: 0,
 		indexedSizeBytes: 0,
 		indexedPromptCount: session.prompts.length,
-		lastIndexedAtMs: Date.now(),
+		lastIndexedAtMs: indexedAtMs,
 	});
 
-	return {
-		action: indexedPrompts > 0 ? "updated" : "skipped",
+	const indexedPrompts = indexPrompts(
+		db,
+		session.prompts,
+		session.sessionName,
+		indexedAtMs,
+	);
+	return createIndexerResult(
+		indexedPrompts > 0 ? "updated" : "skipped",
 		indexedPrompts,
-		sessionFile: session.file,
-	};
+		session.file,
+	);
 }
 
 export async function indexSessionFile(
@@ -50,35 +60,21 @@ export async function indexSessionFile(
 
 	if (fileStats === null) {
 		db.clearSessionPrompts(sessionFile);
-		return {
-			action: "skipped",
-			indexedPrompts: 0,
-			sessionFile,
-		};
+		return createIndexerResult("skipped", 0, sessionFile);
 	}
 
 	if (
-		!options.forceRebuild &&
-		existingSession &&
-		existingSession.indexedSizeBytes === fileStats.size &&
-		existingSession.indexedMtimeMs === fileStats.mtimeMs
+		isSessionFileUnchanged(existingSession, fileStats, options.forceRebuild)
 	) {
-		return {
-			action: "skipped",
-			indexedPrompts: 0,
-			sessionFile,
-		};
+		return createIndexerResult("skipped", 0, sessionFile);
 	}
 
 	const parsedSession = await parseSessionFile(sessionFile);
 	if (parsedSession === null) {
-		return {
-			action: "skipped",
-			indexedPrompts: 0,
-			sessionFile,
-		};
+		return createIndexerResult("skipped", 0, sessionFile);
 	}
 
+	const indexedAtMs = Date.now();
 	db.upsertSession({
 		sessionFile,
 		cwd: parsedSession.cwd,
@@ -86,45 +82,25 @@ export async function indexSessionFile(
 		indexedMtimeMs: fileStats.mtimeMs,
 		indexedSizeBytes: fileStats.size,
 		indexedPromptCount: parsedSession.prompts.length,
-		lastIndexedAtMs: Date.now(),
+		lastIndexedAtMs: indexedAtMs,
 	});
 
-	if (!existingSession) {
-		return {
-			action: "created",
-			indexedPrompts: indexPrompts(
-				db,
-				parsedSession.prompts,
-				parsedSession.sessionName,
-			),
-			sessionFile,
-		};
-	}
-
-	const shouldRebuild =
-		options.forceRebuild || fileStats.size < existingSession.indexedSizeBytes;
-	if (shouldRebuild) {
+	const action = getIndexAction(
+		existingSession,
+		fileStats,
+		options.forceRebuild,
+	);
+	if (action === "rebuilt") {
 		db.clearSessionPrompts(sessionFile);
-		return {
-			action: "rebuilt",
-			indexedPrompts: indexPrompts(
-				db,
-				parsedSession.prompts,
-				parsedSession.sessionName,
-			),
-			sessionFile,
-		};
 	}
 
-	return {
-		action: "updated",
-		indexedPrompts: indexPrompts(
-			db,
-			parsedSession.prompts,
-			parsedSession.sessionName,
-		),
-		sessionFile,
-	};
+	const indexedPrompts = indexPrompts(
+		db,
+		parsedSession.prompts,
+		parsedSession.sessionName,
+		indexedAtMs,
+	);
+	return createIndexerResult(action, indexedPrompts, sessionFile);
 }
 
 export async function indexSessionFiles(
@@ -191,10 +167,56 @@ const readSessionHeaderCwd = (sessionFile: string): string | undefined => {
 	}
 };
 
+const createIndexerResult = (
+	action: IndexerAction,
+	indexedPrompts: number,
+	sessionFile: string,
+): IndexerResult => ({
+	action,
+	indexedPrompts,
+	sessionFile,
+});
+
+const isSessionFileUnchanged = (
+	existingSession: IndexedSessionMetadata | null,
+	fileStats: SessionFileStats,
+	forceRebuild = false,
+): boolean => {
+	return Boolean(
+		!forceRebuild &&
+			existingSession &&
+			existingSession.indexedSizeBytes === fileStats.size &&
+			existingSession.indexedMtimeMs === fileStats.mtimeMs,
+	);
+};
+
+const shouldRebuildSessionFile = (
+	existingSession: IndexedSessionMetadata,
+	fileStats: SessionFileStats,
+	forceRebuild = false,
+): boolean => {
+	return forceRebuild || fileStats.size < existingSession.indexedSizeBytes;
+};
+
+const getIndexAction = (
+	existingSession: IndexedSessionMetadata | null,
+	fileStats: SessionFileStats,
+	forceRebuild = false,
+): Exclude<IndexerAction, "skipped"> => {
+	if (existingSession === null) {
+		return "created";
+	}
+
+	return shouldRebuildSessionFile(existingSession, fileStats, forceRebuild)
+		? "rebuilt"
+		: "updated";
+};
+
 const indexPrompts = (
 	db: PromptHistoryDb,
 	prompts: ParsedSessionPrompt[],
 	sessionName: string,
+	indexedAtMs: number,
 ): number =>
 	db.insertPrompts(
 		prompts.map((prompt) => ({
@@ -209,16 +231,14 @@ const indexPrompts = (
 			preview: prompt.preview,
 			contentHash: prompt.contentHash,
 		})),
-		Date.now(),
+		indexedAtMs,
 	);
 
 const normalizeIndexedMtimeMs = (mtimeMs: number): number => {
 	return Math.trunc(mtimeMs);
 };
 
-const statSessionFile = (
-	path: string,
-): { size: number; mtimeMs: number } | null => {
+const statSessionFile = (path: string): SessionFileStats | null => {
 	try {
 		const stats = statSync(path);
 		return {

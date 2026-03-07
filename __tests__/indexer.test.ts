@@ -7,6 +7,12 @@ import test from "node:test";
 import { PromptHistoryDb } from "../db";
 import { indexSessionFile } from "../indexer";
 
+const TEST_MTIME_MS = {
+	initial: 1_700_000_000_123.456,
+	updated: 1_700_000_000_987.654,
+	rebuilt: 1_700_000_001_234.567,
+} as const;
+
 const createTempDir = () =>
 	mkdtempSync(join(tmpdir(), "prompt-history-indexer-"));
 
@@ -70,8 +76,13 @@ const writeSession = (sessionFile: string, lines: string[]) => {
 };
 
 const setSessionMtime = (sessionFile: string, mtimeMs: number) => {
-	const seconds = mtimeMs / 1_000;
-	utimesSync(sessionFile, seconds, seconds);
+	utimesSync(sessionFile, mtimeMs / 1_000, mtimeMs / 1_000);
+};
+
+const listGlobalPromptTexts = (db: PromptHistoryDb, cwd: string): string[] => {
+	return db
+		.listRecentPrompts({ scope: "global", cwd, limit: 10 })
+		.map((entry) => entry.text);
 };
 
 test("indexSessionFile backfills sessions and exposes recent prompts", async () => {
@@ -121,7 +132,7 @@ test("indexSessionFile skips unchanged files, appends on growth, and rebuilds on
 		userMessage("m3", "m2", "2026-03-07T00:00:04.000Z", "two", 200),
 	];
 	writeSession(sessionFile, initialLines);
-	setSessionMtime(sessionFile, 1_700_000_000_123.456);
+	setSessionMtime(sessionFile, TEST_MTIME_MS.initial);
 
 	await indexSessionFile(db, sessionFile);
 	const indexedSession = db.getIndexedSession(sessionFile);
@@ -132,43 +143,33 @@ test("indexSessionFile skips unchanged files, appends on growth, and rebuilds on
 
 	const skipped = await indexSessionFile(db, sessionFile);
 	assert.equal(skipped.action, "skipped");
-	assert.equal(
-		db.listRecentPrompts({ scope: "global", cwd: "/tmp/project-b", limit: 10 })
-			.length,
-		2,
-	);
+	assert.equal(listGlobalPromptTexts(db, "/tmp/project-b").length, 2);
 
 	writeSession(sessionFile, [
 		...initialLines,
 		assistantMessage("m4", "m3", "2026-03-07T00:00:05.000Z", "another reply"),
 		userMessage("m5", "m4", "2026-03-07T00:00:06.000Z", "three", 300),
 	]);
-	setSessionMtime(sessionFile, 1_700_000_000_987.654);
+	setSessionMtime(sessionFile, TEST_MTIME_MS.updated);
 	const updated = await indexSessionFile(db, sessionFile);
 	assert.equal(updated.action, "updated");
 	assert.equal(updated.indexedPrompts, 1);
-	assert.deepEqual(
-		db
-			.listRecentPrompts({ scope: "global", cwd: "/tmp/project-b", limit: 10 })
-			.map((entry) => entry.text),
-		["three", "two", "one"],
-	);
+	assert.deepEqual(listGlobalPromptTexts(db, "/tmp/project-b"), [
+		"three",
+		"two",
+		"one",
+	]);
 
 	writeSession(sessionFile, [
 		sessionHeader("/tmp/project-b"),
 		sessionInfo("Beta Session"),
 		userMessage("m1", null, "2026-03-07T00:00:02.000Z", "one", 100),
 	]);
-	setSessionMtime(sessionFile, 1_700_000_001_234.567);
+	setSessionMtime(sessionFile, TEST_MTIME_MS.rebuilt);
 	const rebuilt = await indexSessionFile(db, sessionFile);
 	assert.equal(rebuilt.action, "rebuilt");
 	assert.equal(rebuilt.indexedPrompts, 1);
-	assert.deepEqual(
-		db
-			.listRecentPrompts({ scope: "global", cwd: "/tmp/project-b", limit: 10 })
-			.map((entry) => entry.text),
-		["one"],
-	);
+	assert.deepEqual(listGlobalPromptTexts(db, "/tmp/project-b"), ["one"]);
 
 	db.close();
 });
