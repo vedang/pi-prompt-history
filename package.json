@@ -2,8 +2,8 @@
   "name": "prompt-history",
   "version": "0.1.0",
   "private": true,
-  "description": "Scaffold for Ctrl-R prompt history search extension.",
+  "description": "Ctrl-R style prompt-history search extension for pi.",
   "type": "module",
   "main": "index.ts",
-  "keywords": ["pi", "extension", "prompt-history", "sqlite"]
+  "keywords": ["pi", "extension", "prompt-history", "history", "sqlite", "ctrl-r"]
 }
