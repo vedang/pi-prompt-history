@@ -1,8 +1,11 @@
 import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
+	ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
 
+import type { PromptHistoryConfig } from "./config";
+import { copyToClipboard } from "./clipboard";
 import { expandHomePath, resolvePromptHistoryConfig } from "./config";
 import { PromptHistoryDb } from "./db";
 import {
@@ -11,20 +14,99 @@ import {
 	indexSessionFiles,
 	type IndexerResult,
 } from "./indexer";
-import { searchPrompts, type SearchScope } from "./search";
+import {
+	searchPrompts,
+	type PromptSearchResult,
+	type SearchOptions,
+	type SearchScope,
+} from "./search";
+import { PROMPT_HISTORY_RESUME_CHOICES } from "./selector";
+import type {
+	PromptHistorySelector,
+	PromptHistorySelectorOptions,
+	PromptHistorySelection,
+} from "./selector-ui";
+
+export { PROMPT_HISTORY_RESUME_CHOICES };
+
+type PromptHistoryDbLike = Pick<
+	PromptHistoryDb,
+	"close" | "listRecentPrompts"
+> &
+	Partial<Pick<PromptHistoryDb, "listPromptCandidates">>;
+
+type PromptHistorySearchOptions = SearchOptions & {
+	limit: number;
+};
+
+type PromptHistoryIndexContext = Pick<
+	ExtensionContext,
+	"cwd" | "sessionManager"
+>;
+type PromptHistoryOpenContext = Pick<
+	ExtensionContext,
+	"cwd" | "hasUI" | "sessionManager" | "ui"
+> &
+	Partial<
+		Pick<ExtensionCommandContext, "fork" | "switchSession" | "waitForIdle">
+	>;
+
+type PromptHistoryResumeMode = "fork" | "restore";
+
+// Shortcut handlers receive ExtensionContext, not ExtensionCommandContext, so
+// Ctrl-R resume/fork still needs an internal slash-command handoff to regain
+// safe access to switchSession()/fork() when the user presses Enter.
+const PROMPT_HISTORY_RESUME_COMMAND = "prompt-history-resume";
+
+type PromptHistoryResumeSelectionContext = Pick<ExtensionContext, "ui"> &
+	Partial<Pick<ExtensionCommandContext, "waitForIdle">>;
+
+type PromptHistoryDbContext = Pick<ExtensionCommandContext, "cwd">;
+
+type PromptHistoryResumeRequest = {
+	mode: PromptHistoryResumeMode;
+	scope: SearchScope;
+	sessionFile: string;
+	entryId?: string;
+	fallbackText?: string;
+};
+
+interface OpenPromptHistoryDependencies {
+	resolveConfig?: (cwd: string) => PromptHistoryConfig;
+	createDb?: (config: PromptHistoryConfig) => PromptHistoryDbLike;
+	refreshIndex?: (
+		db: PromptHistoryDbLike,
+		ctx: PromptHistoryIndexContext,
+		scope: SearchScope,
+		forceRebuild: boolean,
+	) => Promise<IndexerResult[]>;
+	search?: (
+		db: PromptHistoryDbLike,
+		options: PromptHistorySearchOptions,
+	) => Promise<PromptSearchResult[]>;
+	loadSelector?: () => Promise<{
+		PromptHistorySelector: new (
+			options: PromptHistorySelectorOptions,
+		) => PromptHistorySelector;
+	}>;
+}
+
+interface PromptHistorySelectionDependencies {
+	copyToClipboard?: (text: string) => void;
+}
 
 export function registerPromptHistoryCommands(pi: ExtensionAPI): void {
 	pi.registerCommand("prompt-history", {
 		description: "Search prompt history in the current working directory",
 		handler: async (_args, ctx) => {
-			await openPromptHistory(pi, ctx, "local");
+			await openPromptHistory(ctx, "local");
 		},
 	});
 
 	pi.registerCommand("prompt-history-global", {
 		description: "Search prompt history across all sessions",
 		handler: async (_args, ctx) => {
-			await openPromptHistory(pi, ctx, "global");
+			await openPromptHistory(ctx, "global");
 		},
 	});
 
@@ -43,10 +125,17 @@ export function registerPromptHistoryCommands(pi: ExtensionAPI): void {
 		},
 	});
 
+	pi.registerCommand(PROMPT_HISTORY_RESUME_COMMAND, {
+		description: "Internal helper for prompt-history resume",
+		handler: async (args, ctx) => {
+			await runPromptHistoryResumeCommand(ctx, args);
+		},
+	});
+
 	pi.registerShortcut("ctrl+r", {
 		description: "Search prompt history",
 		handler: async (ctx) => {
-			await openPromptHistory(pi, ctx, "local");
+			await openPromptHistory(ctx, "local");
 		},
 	});
 }
@@ -55,64 +144,79 @@ export function isPromptHistoryScope(value: unknown): value is SearchScope {
 	return value === "local" || value === "global";
 }
 
-const normalizeScopeArg = (value: string): SearchScope => {
+function normalizeScopeArg(value: string): SearchScope {
 	const normalized = value.trim().toLowerCase();
 	return normalized === "global" || normalized === "all" ? "global" : "local";
-};
+}
 
-async function openPromptHistory(
-	_pi: ExtensionAPI,
-	ctx: ExtensionCommandContext,
+export async function openPromptHistory(
+	ctx: PromptHistoryOpenContext,
 	initialScope: SearchScope,
+	overrides: OpenPromptHistoryDependencies = {},
 ): Promise<void> {
 	if (!ctx.hasUI) {
 		ctx.ui.notify("prompt-history requires interactive mode", "error");
 		return;
 	}
 
-	const config = resolvePromptHistoryConfig();
-	const db = new PromptHistoryDb({ path: config.dbPath });
+	const resolveConfig =
+		overrides.resolveConfig ??
+		((cwd: string) => resolvePromptHistoryConfig({ cwd }));
+	const createDb =
+		overrides.createDb ??
+		((config: PromptHistoryConfig) =>
+			new PromptHistoryDb({ path: config.dbPath }));
+	const refreshIndex =
+		overrides.refreshIndex ??
+		(async (db, commandContext, scope, forceRebuild) =>
+			refreshPromptHistoryIndex(
+				db as PromptHistoryDb,
+				commandContext,
+				scope,
+				forceRebuild,
+			));
+	const search =
+		overrides.search ?? (async (db, options) => searchPrompts(db, options));
+	const loadSelector =
+		overrides.loadSelector ?? (() => import("./selector-ui"));
 
-	try {
-		await refreshPromptHistoryIndex(db, ctx, "global", false);
-		const initialResults = await searchPrompts(db, {
-			scope: initialScope,
+	const config = resolveConfig(ctx.cwd);
+	const db = createDb(config);
+	const initialQuery = ctx.ui.getEditorText();
+	const searchWithCurrentContext = (
+		query: string,
+		scope: SearchScope,
+	): Promise<PromptSearchResult[]> =>
+		search(db, {
+			scope,
 			cwd: ctx.cwd,
-			query: "",
+			query,
 			limit: config.maxResults,
 		});
 
-		let tuiRef:
-			| {
-					requestRender: () => void;
-			  }
-			| undefined;
+	try {
+		await refreshIndex(db, ctx, "global", false);
+		const initialResults = await searchWithCurrentContext(
+			initialQuery,
+			initialScope,
+		);
 
-		const { PromptHistorySelector } = await import("./selector-ui");
-		type PromptHistoryOverlaySelection = {
-			item: { text: string };
-			scope: SearchScope;
-		} | null;
-		const selection = await ctx.ui.custom<PromptHistoryOverlaySelection>(
-			(tui, theme, _kb, done) => {
-				tuiRef = tui;
-				return new PromptHistorySelector({
+		const { PromptHistorySelector } = await loadSelector();
+		const selection = await ctx.ui.custom<PromptHistorySelection | null>(
+			(tui, theme, _kb, done) =>
+				new PromptHistorySelector({
 					tui,
 					theme,
 					initialScope,
 					initialResults,
-					onSearch: async (query, scope) => {
-						return searchPrompts(db, {
-							scope,
-							cwd: ctx.cwd,
-							query,
-							limit: config.maxResults,
-						});
-					},
+					initialQuery,
+					primaryAction: config.primaryAction,
+					currentCwd: ctx.cwd,
+					activeSessionFile: getActiveSessionFile(ctx),
+					onSearch: searchWithCurrentContext,
 					onSelect: (result) => done(result),
 					onCancel: () => done(null),
-				});
-			},
+				}),
 			{
 				overlay: true,
 				overlayOptions: {
@@ -129,11 +233,215 @@ async function openPromptHistory(
 			return;
 		}
 
+		if (
+			selection.action === "resume" &&
+			!supportsPromptHistorySessionControl(ctx)
+		) {
+			await queuePromptHistoryResume(ctx, selection);
+			return;
+		}
+
+		await handlePromptHistorySelection(
+			ctx as ExtensionCommandContext,
+			selection,
+		);
+	} finally {
+		db.close();
+	}
+}
+
+export async function handlePromptHistorySelection(
+	ctx: ExtensionCommandContext,
+	selection: PromptHistorySelection,
+	deps: PromptHistorySelectionDependencies = {},
+): Promise<void> {
+	if (selection.action === "copy") {
 		// [tag:prompt_history_selection_replaces_editor_text] Ctrl-R should replace the current editor contents rather than append to it.
 		ctx.ui.setEditorText(selection.item.text);
+		(deps.copyToClipboard ?? copyToClipboard)(selection.item.text);
 		// [ref:prompt_history_selection_replaces_editor_text]
-		tuiRef?.requestRender();
 		ctx.ui.notify(`Loaded prompt from ${selection.scope} history`, "info");
+		return;
+	}
+
+	const mode = await selectPromptHistoryResumeMode(ctx);
+	if (!mode) {
+		return;
+	}
+
+	await performPromptHistoryResume(
+		ctx,
+		createPromptHistoryResumeRequest(selection, mode),
+	);
+}
+
+async function runPromptHistoryResumeCommand(
+	ctx: ExtensionCommandContext,
+	args: string,
+): Promise<void> {
+	const request = parsePromptHistoryResumeRequest(args);
+	if (!request) {
+		ctx.ui.notify("Invalid prompt-history resume request", "error");
+		return;
+	}
+
+	await performPromptHistoryResume(ctx, request);
+}
+
+async function queuePromptHistoryResume(
+	ctx: PromptHistoryResumeSelectionContext,
+	selection: PromptHistorySelection,
+): Promise<void> {
+	const mode = await selectPromptHistoryResumeMode(ctx);
+	if (!mode) {
+		return;
+	}
+
+	ctx.ui.setEditorText(
+		buildPromptHistoryResumeCommand(
+			createPromptHistoryResumeRequest(selection, mode),
+		),
+	);
+	ctx.ui.notify("Resume command ready. Press Enter to continue.", "info");
+}
+
+function supportsPromptHistorySessionControl(
+	ctx: PromptHistoryOpenContext,
+): ctx is ExtensionCommandContext {
+	return (
+		typeof ctx.fork === "function" && typeof ctx.switchSession === "function"
+	);
+}
+
+async function selectPromptHistoryResumeMode(
+	ctx: PromptHistoryResumeSelectionContext,
+): Promise<PromptHistoryResumeMode | null> {
+	if (typeof ctx.waitForIdle === "function") {
+		await ctx.waitForIdle();
+	}
+
+	const choice = await ctx.ui.select(
+		"Resume session: fork from this point or restore the entire session?",
+		[PROMPT_HISTORY_RESUME_CHOICES.fork, PROMPT_HISTORY_RESUME_CHOICES.restore],
+	);
+	if (!choice) {
+		return null;
+	}
+
+	return choice === PROMPT_HISTORY_RESUME_CHOICES.restore ? "restore" : "fork";
+}
+
+async function performPromptHistoryResume(
+	ctx: ExtensionCommandContext,
+	request: PromptHistoryResumeRequest,
+): Promise<void> {
+	if (request.mode === "restore") {
+		const result = await ctx.switchSession(request.sessionFile);
+		if (!result.cancelled) {
+			ctx.ui.notify(`Restored session from ${request.scope} history`, "info");
+		}
+		return;
+	}
+
+	const activeSessionFile = getActiveSessionFile(ctx);
+	if (activeSessionFile !== request.sessionFile) {
+		const switchResult = await ctx.switchSession(request.sessionFile);
+		if (switchResult.cancelled) {
+			return;
+		}
+	}
+
+	const forkResult = (await ctx.fork(request.entryId ?? "")) as {
+		cancelled: boolean;
+		selectedText?: string;
+	};
+	if (!forkResult.cancelled) {
+		const text = forkResult.selectedText ?? request.fallbackText;
+		if (text !== undefined) {
+			ctx.ui.setEditorText(text);
+		}
+		ctx.ui.notify(`Forked from ${request.scope} history`, "info");
+	}
+}
+
+function createPromptHistoryResumeRequest(
+	selection: PromptHistorySelection,
+	mode: PromptHistoryResumeMode,
+): PromptHistoryResumeRequest {
+	return {
+		mode,
+		scope: selection.scope,
+		sessionFile: selection.item.sessionFile,
+		entryId: selection.item.id,
+		fallbackText: selection.item.text,
+	};
+}
+
+function buildPromptHistoryResumeCommand(
+	request: PromptHistoryResumeRequest,
+): string {
+	const encoded = Buffer.from(JSON.stringify(request)).toString("base64url");
+	return `/${PROMPT_HISTORY_RESUME_COMMAND} ${encoded}`;
+}
+
+function parsePromptHistoryResumeRequest(
+	args: string,
+): PromptHistoryResumeRequest | null {
+	const encoded = args.trim();
+	if (!encoded) {
+		return null;
+	}
+
+	try {
+		const parsed = JSON.parse(
+			Buffer.from(encoded, "base64url").toString("utf8"),
+		) as Partial<PromptHistoryResumeRequest>;
+		if (!parsed || typeof parsed !== "object") {
+			return null;
+		}
+		if (!isPromptHistoryScope(parsed.scope)) {
+			return null;
+		}
+		if (
+			typeof parsed.sessionFile !== "string" ||
+			parsed.sessionFile.length === 0
+		) {
+			return null;
+		}
+		if (parsed.mode !== "fork" && parsed.mode !== "restore") {
+			return null;
+		}
+		if (
+			parsed.mode === "fork" &&
+			(typeof parsed.entryId !== "string" || parsed.entryId.length === 0)
+		) {
+			return null;
+		}
+
+		return {
+			mode: parsed.mode,
+			scope: parsed.scope,
+			sessionFile: parsed.sessionFile,
+			entryId: parsed.entryId,
+			fallbackText:
+				typeof parsed.fallbackText === "string"
+					? parsed.fallbackText
+					: undefined,
+		};
+	} catch {
+		return null;
+	}
+}
+
+async function withPromptHistoryDb<T>(
+	ctx: PromptHistoryDbContext,
+	handler: (db: PromptHistoryDb, config: PromptHistoryConfig) => Promise<T>,
+): Promise<T> {
+	const config = resolvePromptHistoryConfig({ cwd: ctx.cwd });
+	const db = new PromptHistoryDb({ path: config.dbPath });
+
+	try {
+		return await handler(db, config);
 	} finally {
 		db.close();
 	}
@@ -143,25 +451,17 @@ async function reindexPromptHistory(
 	ctx: ExtensionCommandContext,
 	scope: SearchScope,
 ): Promise<void> {
-	const config = resolvePromptHistoryConfig();
-	const db = new PromptHistoryDb({ path: config.dbPath });
-
-	try {
+	await withPromptHistoryDb(ctx, async (db) => {
 		const results = await refreshPromptHistoryIndex(db, ctx, scope, true);
 		const summary = summarizeIndexerResults(results);
 		ctx.ui.notify(`Prompt history reindex (${scope}): ${summary}`, "success");
-	} finally {
-		db.close();
-	}
+	});
 }
 
 async function showPromptHistoryStatus(
 	ctx: ExtensionCommandContext,
 ): Promise<void> {
-	const config = resolvePromptHistoryConfig();
-	const db = new PromptHistoryDb({ path: config.dbPath });
-
-	try {
+	await withPromptHistoryDb(ctx, async (db, config) => {
 		await refreshPromptHistoryIndex(db, ctx, "global", false);
 		const localStats = db.getStats({ scope: "local", cwd: ctx.cwd });
 		const globalStats = db.getStats({ scope: "global", cwd: ctx.cwd });
@@ -173,18 +473,16 @@ async function showPromptHistoryStatus(
 			].join("\n"),
 			"info",
 		);
-	} finally {
-		db.close();
-	}
+	});
 }
 
 async function refreshPromptHistoryIndex(
 	db: PromptHistoryDb,
-	ctx: Pick<ExtensionCommandContext, "cwd" | "sessionManager">,
+	ctx: PromptHistoryIndexContext,
 	scope: SearchScope,
 	forceRebuild: boolean,
 ): Promise<IndexerResult[]> {
-	const config = resolvePromptHistoryConfig();
+	const config = resolvePromptHistoryConfig({ cwd: ctx.cwd });
 	const sessionFiles = discoverSessionFiles(expandHomePath(config.sessionDir));
 	const activeSessionFile = getActiveSessionFile(ctx);
 	const filteredFiles =
@@ -204,13 +502,22 @@ async function refreshPromptHistoryIndex(
 }
 
 function getActiveSessionFile(
-	ctx: Pick<ExtensionCommandContext, "sessionManager">,
+	ctx: Partial<Pick<PromptHistoryIndexContext, "sessionManager">>,
 ): string | undefined {
-	const manager = ctx.sessionManager as {
-		getSessionFile?: () => string | undefined;
-	};
-	return manager.getSessionFile?.();
+	const manager = ctx.sessionManager as
+		| {
+				getSessionFile?: () => string | undefined;
+		  }
+		| undefined;
+	return manager?.getSessionFile?.();
 }
+
+const INDEXER_ACTION_ORDER = [
+	"created",
+	"updated",
+	"rebuilt",
+	"skipped",
+] as const;
 
 function summarizeIndexerResults(results: IndexerResult[]): string {
 	const counts = {
@@ -224,12 +531,7 @@ function summarizeIndexerResults(results: IndexerResult[]): string {
 		counts[result.action] += 1;
 	}
 
-	return [
-		`${counts.created} created`,
-		`${counts.updated} updated`,
-		`${counts.rebuilt} rebuilt`,
-		`${counts.skipped} skipped`,
-	]
-		.join(" • ")
-		.trim();
+	return INDEXER_ACTION_ORDER.map(
+		(action) => `${counts[action]} ${action}`,
+	).join(" • ");
 }

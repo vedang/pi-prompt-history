@@ -11,7 +11,16 @@ import {
 import type { PromptSearchResult, SearchScope } from "./search";
 import {
 	buildPromptHistoryMetadata,
+	formatPromptHistoryScopeLabel,
+	groupPromptHistoryResults,
+	resolvePromptHistoryActionKeyBindings,
+	resolvePromptHistorySessionGroup,
 	togglePromptHistoryScope,
+	type PromptHistoryAction,
+	type PromptHistoryActionKeyBindings,
+	type PromptHistoryResultSection,
+	type PromptHistorySessionContext,
+	type PromptHistorySessionGroup,
 } from "./selector";
 
 interface PromptHistoryTheme {
@@ -21,6 +30,7 @@ interface PromptHistoryTheme {
 
 export interface PromptHistorySelection {
 	item: PromptSearchResult;
+	action: PromptHistoryAction;
 	scope: SearchScope;
 	query: string;
 }
@@ -30,6 +40,9 @@ export interface PromptHistorySelectorOptions {
 	theme: PromptHistoryTheme;
 	initialScope: SearchScope;
 	initialResults: PromptSearchResult[];
+	primaryAction: PromptHistoryAction;
+	currentCwd: string;
+	activeSessionFile?: string;
 	initialQuery?: string;
 	maxVisible?: number;
 	onSearch: (
@@ -48,6 +61,8 @@ export class PromptHistorySelector implements Focusable {
 	private readonly onSelect: PromptHistorySelectorOptions["onSelect"];
 	private readonly onCancel: PromptHistorySelectorOptions["onCancel"];
 	private readonly maxVisible: number;
+	private readonly actionKeyBindings: PromptHistoryActionKeyBindings;
+	private readonly sessionContext: PromptHistorySessionContext;
 
 	private query = "";
 	private scope: SearchScope;
@@ -70,12 +85,20 @@ export class PromptHistorySelector implements Focusable {
 		this.tui = options.tui;
 		this.theme = options.theme;
 		this.scope = options.initialScope;
-		this.results = options.initialResults;
 		this.query = options.initialQuery ?? "";
 		this.onSearch = options.onSearch;
 		this.onSelect = options.onSelect;
 		this.onCancel = options.onCancel;
 		this.maxVisible = options.maxVisible ?? 8;
+		this.actionKeyBindings = resolvePromptHistoryActionKeyBindings(
+			options.primaryAction,
+		);
+		this.sessionContext = {
+			currentCwd: options.currentCwd,
+			activeSessionFile: options.activeSessionFile,
+		};
+		this.results = this.orderResults(options.initialResults);
+		this.input.setValue(this.query);
 	}
 
 	handleInput(data: string): void {
@@ -88,48 +111,32 @@ export class PromptHistorySelector implements Focusable {
 		}
 
 		if (kb.matches(data, "selectUp")) {
-			if (this.results.length > 0) {
-				this.selectedIndex = Math.max(0, this.selectedIndex - 1);
-			}
-			this.tui.requestRender();
+			this.moveSelection(-1);
 			return;
 		}
 
 		if (kb.matches(data, "selectDown")) {
-			if (this.results.length > 0) {
-				this.selectedIndex = Math.min(
-					this.results.length - 1,
-					this.selectedIndex + 1,
-				);
-			}
-			this.tui.requestRender();
+			this.moveSelection(1);
 			return;
 		}
 
 		if (kb.matches(data, "selectPageUp")) {
-			if (this.results.length > 0) {
-				this.selectedIndex = Math.max(0, this.selectedIndex - this.maxVisible);
-			}
-			this.tui.requestRender();
+			this.moveSelection(-this.maxVisible);
 			return;
 		}
 
 		if (kb.matches(data, "selectPageDown")) {
-			if (this.results.length > 0) {
-				this.selectedIndex = Math.min(
-					this.results.length - 1,
-					this.selectedIndex + this.maxVisible,
-				);
-			}
-			this.tui.requestRender();
+			this.moveSelection(this.maxVisible);
 			return;
 		}
 
-		if (kb.matches(data, "selectConfirm")) {
+		const action = this.resolveAction(data);
+		if (action) {
 			const selected = this.results[this.selectedIndex];
 			if (selected) {
 				this.onSelect({
 					item: selected,
+					action,
 					scope: this.scope,
 					query: this.query,
 				});
@@ -158,11 +165,15 @@ export class PromptHistorySelector implements Focusable {
 		const accent = (text: string) => this.theme.fg("accent", text);
 		const muted = (text: string) => this.theme.fg("muted", text);
 		const dim = (text: string) => this.theme.fg("dim", text);
+		const selectedEntry = this.results[this.selectedIndex];
+		const selectedGroup = selectedEntry
+			? this.getSessionGroup(selectedEntry)
+			: this.defaultSessionGroup();
 
 		lines.push(border(`╭${"─".repeat(innerWidth)}╮`));
 		lines.push(
 			boxLine(
-				`${accent(this.theme.bold("Prompt History"))} ${dim(`[${this.scopeLabel()}]`)}`,
+				`${accent(this.theme.bold("Prompt History"))} ${dim(`[${this.scopeLabel(selectedGroup)}]`)}`,
 				innerWidth,
 				border,
 			),
@@ -186,60 +197,59 @@ export class PromptHistorySelector implements Focusable {
 		if (this.results.length === 0) {
 			lines.push(boxLine(muted("No matching prompts"), innerWidth, border));
 		} else {
-			const windowStart = Math.max(
-				0,
-				Math.min(
-					this.selectedIndex - Math.floor(this.maxVisible / 2),
-					this.results.length - this.maxVisible,
-				),
-			);
-			const windowEnd = Math.min(
-				this.results.length,
-				windowStart + this.maxVisible,
-			);
+			for (const section of this.getVisibleSections()) {
+				lines.push(
+					boxLine(
+						truncateToWidth(
+							formatSectionHeader(section, innerWidth, this.theme),
+							innerWidth,
+						),
+						innerWidth,
+						border,
+					),
+				);
 
-			for (let index = windowStart; index < windowEnd; index += 1) {
-				const entry = this.results[index];
-				if (!entry) {
-					continue;
+				for (const entry of section.results) {
+					const selected = entry === this.results[this.selectedIndex];
+					const prefix = selected ? accent("› ") : dim("  ");
+					const preview = highlightPositions(
+						entry.preview || entry.text,
+						entry.matchPositions,
+						(text) => this.theme.fg("warning", this.theme.bold(text)),
+					);
+					const meta = buildPromptHistoryMetadata(entry, {
+						scope: this.scope,
+						sessionGroup: section.group,
+						...this.sessionContext,
+					});
+					lines.push(
+						boxLine(
+							truncateToWidth(
+								`${prefix}${selected ? accent(preview) : preview}`,
+								innerWidth,
+							),
+							innerWidth,
+							border,
+						),
+					);
+					lines.push(
+						boxLine(
+							truncateToWidth(
+								`  ${selected ? muted(meta) : dim(meta)}`,
+								innerWidth,
+							),
+							innerWidth,
+							border,
+						),
+					);
 				}
-				const selected = index === this.selectedIndex;
-				const prefix = selected ? accent("› ") : dim("  ");
-				const preview = highlightPositions(
-					entry.preview || entry.text,
-					entry.matchPositions,
-					(text) => this.theme.fg("warning", this.theme.bold(text)),
-				);
-				const meta = buildPromptHistoryMetadata(entry, this.scope);
-				lines.push(
-					boxLine(
-						truncateToWidth(
-							`${prefix}${selected ? accent(preview) : preview}`,
-							innerWidth,
-						),
-						innerWidth,
-						border,
-					),
-				);
-				lines.push(
-					boxLine(
-						truncateToWidth(
-							`  ${selected ? muted(meta) : dim(meta)}`,
-							innerWidth,
-						),
-						innerWidth,
-						border,
-					),
-				);
 			}
 		}
 
 		lines.push(border(`├${"─".repeat(innerWidth)}┤`));
 		lines.push(
 			boxLine(
-				dim(
-					"↑ ↓ navigate • PgUp/PgDn page • Enter select • Tab/Ctrl+R toggle • Esc cancel",
-				),
+				truncateToWidth(dim(this.helpText()), innerWidth),
 				innerWidth,
 				border,
 			),
@@ -252,6 +262,38 @@ export class PromptHistorySelector implements Focusable {
 		this.input.invalidate();
 	}
 
+	private moveSelection(delta: number): void {
+		if (this.results.length > 0) {
+			const nextIndex = this.selectedIndex + delta;
+			this.selectedIndex = Math.min(
+				this.results.length - 1,
+				Math.max(0, nextIndex),
+			);
+		}
+		this.tui.requestRender();
+	}
+
+	private resolveAction(data: string): PromptHistoryAction | null {
+		if (matchesKey(data, this.actionKeyBindings.copy)) {
+			return "copy";
+		}
+		if (matchesKey(data, this.actionKeyBindings.resume)) {
+			return "resume";
+		}
+		return null;
+	}
+
+	private helpText(): string {
+		return [
+			"↑ ↓ navigate",
+			"PgUp/PgDn page",
+			`${formatKeyLabel(this.actionKeyBindings.copy)} copy`,
+			`${formatKeyLabel(this.actionKeyBindings.resume)} resume`,
+			"Tab/Ctrl+R toggle",
+			"Esc cancel",
+		].join(" • ");
+	}
+
 	private async refreshResults(): Promise<void> {
 		const requestId = ++this.requestId;
 		this.loading = true;
@@ -262,7 +304,7 @@ export class PromptHistorySelector implements Focusable {
 			if (requestId !== this.requestId) {
 				return;
 			}
-			this.results = results;
+			this.results = this.orderResults(results);
 			this.selectedIndex = Math.min(
 				this.selectedIndex,
 				Math.max(0, this.results.length - 1),
@@ -275,25 +317,70 @@ export class PromptHistorySelector implements Focusable {
 		}
 	}
 
-	private scopeLabel(): string {
-		return this.scope === "local" ? "Local" : "Global";
+	private getVisibleSections(): PromptHistoryResultSection[] {
+		return groupPromptHistoryResults(
+			this.getVisibleResults(),
+			this.sessionContext,
+		);
+	}
+
+	private orderResults(results: PromptSearchResult[]): PromptSearchResult[] {
+		return groupPromptHistoryResults(results, this.sessionContext).flatMap(
+			(section) => section.results,
+		);
+	}
+
+	private getVisibleResults(): PromptSearchResult[] {
+		if (this.results.length === 0) {
+			return [];
+		}
+
+		const windowStart = Math.max(
+			0,
+			Math.min(
+				this.selectedIndex - Math.floor(this.maxVisible / 2),
+				this.results.length - this.maxVisible,
+			),
+		);
+		const windowEnd = Math.min(
+			this.results.length,
+			windowStart + this.maxVisible,
+		);
+		return this.results.slice(windowStart, windowEnd);
+	}
+
+	private getSessionGroup(
+		entry: PromptSearchResult,
+	): PromptHistorySessionGroup {
+		return resolvePromptHistorySessionGroup(entry, this.sessionContext);
+	}
+
+	private defaultSessionGroup(): PromptHistorySessionGroup {
+		if (this.sessionContext.activeSessionFile) {
+			return "current-session";
+		}
+		return this.scope === "local" ? "same-cwd" : "other-cwd";
+	}
+
+	private scopeLabel(sessionGroup: PromptHistorySessionGroup): string {
+		return formatPromptHistoryScopeLabel(this.scope, sessionGroup);
 	}
 }
 
-const boxLine = (
+function boxLine(
 	content: string,
 	innerWidth: number,
 	border: (text: string) => string,
-): string => {
+): string {
 	const padding = Math.max(0, innerWidth - visibleWidth(content));
 	return `${border("│")}${content}${" ".repeat(padding)}${border("│")}`;
-};
+}
 
-const highlightPositions = (
+function highlightPositions(
 	text: string,
 	matchPositions: number[],
 	highlight: (text: string) => string,
-): string => {
+): string {
 	if (matchPositions.length === 0) {
 		return text;
 	}
@@ -305,4 +392,37 @@ const highlightPositions = (
 		result += positions.has(index) ? highlight(character) : character;
 	}
 	return result;
-};
+}
+
+function formatSectionHeader(
+	section: PromptHistoryResultSection,
+	innerWidth: number,
+	theme: PromptHistoryTheme,
+): string {
+	const label = `${section.label} (${section.results.length})`;
+	const content = ` ${label} `;
+	const dashCount = Math.max(0, innerWidth - visibleWidth(content));
+	const styled = `${content}${"─".repeat(dashCount)}`;
+	return theme.fg(sectionColor(section.group), theme.bold(styled));
+}
+
+const PROMPT_HISTORY_SECTION_COLORS: Record<PromptHistorySessionGroup, string> =
+	{
+		"current-session": "accent",
+		"same-cwd": "muted",
+		"other-cwd": "dim",
+	};
+
+function sectionColor(group: PromptHistorySessionGroup): string {
+	return PROMPT_HISTORY_SECTION_COLORS[group];
+}
+
+function formatKeyLabel(key: string): string {
+	if (key === "enter") {
+		return "Enter";
+	}
+	if (key === "f2") {
+		return "F2";
+	}
+	return key;
+}
