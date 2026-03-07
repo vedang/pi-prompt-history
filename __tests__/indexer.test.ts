@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -69,6 +69,11 @@ const writeSession = (sessionFile: string, lines: string[]) => {
 	writeFileSync(sessionFile, lines.join("\n") + "\n");
 };
 
+const setSessionMtime = (sessionFile: string, mtimeMs: number) => {
+	const seconds = mtimeMs / 1_000;
+	utimesSync(sessionFile, seconds, seconds);
+};
+
 test("indexSessionFile backfills sessions and exposes recent prompts", async () => {
 	const dir = createTempDir();
 	const db = new PromptHistoryDb({ path: join(dir, "history.db") });
@@ -116,8 +121,15 @@ test("indexSessionFile skips unchanged files, appends on growth, and rebuilds on
 		userMessage("m3", "m2", "2026-03-07T00:00:04.000Z", "two", 200),
 	];
 	writeSession(sessionFile, initialLines);
+	setSessionMtime(sessionFile, 1_700_000_000_123.456);
 
 	await indexSessionFile(db, sessionFile);
+	const indexedSession = db.getIndexedSession(sessionFile);
+	assert.equal(
+		indexedSession?.indexedMtimeMs,
+		Math.trunc(statSync(sessionFile).mtimeMs),
+	);
+
 	const skipped = await indexSessionFile(db, sessionFile);
 	assert.equal(skipped.action, "skipped");
 	assert.equal(
@@ -131,6 +143,7 @@ test("indexSessionFile skips unchanged files, appends on growth, and rebuilds on
 		assistantMessage("m4", "m3", "2026-03-07T00:00:05.000Z", "another reply"),
 		userMessage("m5", "m4", "2026-03-07T00:00:06.000Z", "three", 300),
 	]);
+	setSessionMtime(sessionFile, 1_700_000_000_987.654);
 	const updated = await indexSessionFile(db, sessionFile);
 	assert.equal(updated.action, "updated");
 	assert.equal(updated.indexedPrompts, 1);
@@ -146,6 +159,7 @@ test("indexSessionFile skips unchanged files, appends on growth, and rebuilds on
 		sessionInfo("Beta Session"),
 		userMessage("m1", null, "2026-03-07T00:00:02.000Z", "one", 100),
 	]);
+	setSessionMtime(sessionFile, 1_700_000_001_234.567);
 	const rebuilt = await indexSessionFile(db, sessionFile);
 	assert.equal(rebuilt.action, "rebuilt");
 	assert.equal(rebuilt.indexedPrompts, 1);

@@ -212,12 +212,19 @@ const indexPrompts = (
 		Date.now(),
 	);
 
+const normalizeIndexedMtimeMs = (mtimeMs: number): number => {
+	return Math.trunc(mtimeMs);
+};
+
 const statSessionFile = (
 	path: string,
 ): { size: number; mtimeMs: number } | null => {
 	try {
 		const stats = statSync(path);
-		return { size: stats.size, mtimeMs: stats.mtimeMs };
+		return {
+			size: stats.size,
+			mtimeMs: normalizeIndexedMtimeMs(stats.mtimeMs),
+		};
 	} catch {
 		return null;
 	}
