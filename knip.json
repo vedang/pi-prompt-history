@@ -1,0 +1,13 @@
+{
+  "$schema": "https://unpkg.com/knip@5/schema.json",
+  "entry": ["src/**/*.ts"],
+  "project": ["src/**/*.ts", "__tests__/**/*.ts"],
+  "ignoreDependencies": [
+    "@biomejs/biome",
+    "@vitest/coverage-v8",
+    "jscpd",
+    "tsx",
+    "vitest"
+  ],
+  "ignoreBinaries": ["make"]
+}

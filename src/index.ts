@@ -9,6 +9,6 @@ import { initializePromptHistoryConfig } from "./config";
  * Real command, shortcut, and overlay wiring will be added in follow-up tasks.
  */
 export default function promptHistoryExtension(pi: ExtensionAPI): void {
-	initializePromptHistoryConfig();
-	registerPromptHistoryCommands(pi);
+  initializePromptHistoryConfig();
+  registerPromptHistoryCommands(pi);
 }
