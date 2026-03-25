@@ -2,6 +2,8 @@
 
 A Ctrl-R style prompt-history search extension for pi.
 
+![Prompt History overlay screenshot](assets/screenshot.png)
+
 ## What it does
 
 This extension indexes prior **user prompts** from pi session JSONL files and lets you

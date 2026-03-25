@@ -31,8 +31,8 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
-    "@mariozechner/pi-coding-agent": "^0.57.1",
-    "@mariozechner/pi-tui": "^0.57.1",
+    "@mariozechner/pi-coding-agent": "^0.62.0",
+    "@mariozechner/pi-tui": "^0.62.0",
     "@types/node": "^24.12.0",
     "jscpd": "^4.0.8",
     "knip": "^5.86.0",

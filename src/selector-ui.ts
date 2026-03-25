@@ -2,7 +2,7 @@ import type { Focusable, TUI } from "@mariozechner/pi-tui";
 import {
   Input,
   Key,
-  getEditorKeybindings,
+  getKeybindings,
   matchesKey,
   truncateToWidth,
   visibleWidth,
@@ -102,7 +102,7 @@ export class PromptHistorySelector implements Focusable {
   }
 
   handleInput(data: string): void {
-    const kb = getEditorKeybindings();
+    const kb = getKeybindings();
 
     if (matchesKey(data, Key.tab) || matchesKey(data, Key.ctrl("r"))) {
       this.scope = togglePromptHistoryScope(this.scope);
@@ -110,22 +110,22 @@ export class PromptHistorySelector implements Focusable {
       return;
     }
 
-    if (kb.matches(data, "selectUp")) {
+    if (kb.matches(data, "tui.select.up")) {
       this.moveSelection(-1);
       return;
     }
 
-    if (kb.matches(data, "selectDown")) {
+    if (kb.matches(data, "tui.select.down")) {
       this.moveSelection(1);
       return;
     }
 
-    if (kb.matches(data, "selectPageUp")) {
+    if (kb.matches(data, "tui.select.pageUp")) {
       this.moveSelection(-this.maxVisible);
       return;
     }
 
-    if (kb.matches(data, "selectPageDown")) {
+    if (kb.matches(data, "tui.select.pageDown")) {
       this.moveSelection(this.maxVisible);
       return;
     }
@@ -144,7 +144,7 @@ export class PromptHistorySelector implements Focusable {
       return;
     }
 
-    if (kb.matches(data, "selectCancel")) {
+    if (kb.matches(data, "tui.select.cancel")) {
       this.onCancel();
       return;
     }
