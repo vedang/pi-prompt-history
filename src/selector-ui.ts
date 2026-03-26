@@ -1,5 +1,7 @@
 import type { Focusable, TUI } from "@mariozechner/pi-tui";
 import {
+  DEFAULT_EDITOR_KEYBINDINGS,
+  EditorKeybindingsManager,
   Input,
   Key,
   getEditorKeybindings,
@@ -102,7 +104,7 @@ export class PromptHistorySelector implements Focusable {
   }
 
   handleInput(data: string): void {
-    const kb = getEditorKeybindings();
+    const kb = getEditorKeybindings() ?? new EditorKeybindingsManager(DEFAULT_EDITOR_KEYBINDINGS);
 
     if (matchesKey(data, Key.tab) || matchesKey(data, Key.ctrl("r"))) {
       this.scope = togglePromptHistoryScope(this.scope);
@@ -110,37 +112,22 @@ export class PromptHistorySelector implements Focusable {
       return;
     }
 
-    if (kb.matches(data, "selectUp")) {
-      this.moveSelection(-1);
+    // Navigation
+    const navDelta = kb.matches(data, "selectUp") ? -1
+      : kb.matches(data, "selectDown") ? 1
+      : kb.matches(data, "selectPageUp") ? -this.maxVisible
+      : kb.matches(data, "selectPageDown") ? this.maxVisible
+      : null;
+    if (navDelta !== null) {
+      this.moveSelection(navDelta);
       return;
     }
 
-    if (kb.matches(data, "selectDown")) {
-      this.moveSelection(1);
-      return;
-    }
-
-    if (kb.matches(data, "selectPageUp")) {
-      this.moveSelection(-this.maxVisible);
-      return;
-    }
-
-    if (kb.matches(data, "selectPageDown")) {
-      this.moveSelection(this.maxVisible);
-      return;
-    }
-
+    // Action keys
     const action = this.resolveAction(data);
-    if (action) {
-      const selected = this.results[this.selectedIndex];
-      if (selected) {
-        this.onSelect({
-          item: selected,
-          action,
-          scope: this.scope,
-          query: this.query,
-        });
-      }
+    const selected = this.results[this.selectedIndex];
+    if (action && selected) {
+      this.onSelect({ item: selected, action, scope: this.scope, query: this.query });
       return;
     }
 
@@ -149,11 +136,11 @@ export class PromptHistorySelector implements Focusable {
       return;
     }
 
+    // Text input
     const previousValue = this.input.getValue();
     this.input.handleInput(data);
-    const nextValue = this.input.getValue();
-    if (nextValue !== previousValue) {
-      this.query = nextValue;
+    if (this.input.getValue() !== previousValue) {
+      this.query = this.input.getValue();
       void this.refreshResults();
     }
   }
@@ -263,23 +250,16 @@ export class PromptHistorySelector implements Focusable {
   }
 
   private moveSelection(delta: number): void {
-    if (this.results.length > 0) {
-      const nextIndex = this.selectedIndex + delta;
-      this.selectedIndex = Math.min(
-        this.results.length - 1,
-        Math.max(0, nextIndex),
-      );
-    }
+    this.selectedIndex = Math.min(
+      this.results.length - 1,
+      Math.max(0, this.selectedIndex + delta),
+    );
     this.tui.requestRender();
   }
 
   private resolveAction(data: string): PromptHistoryAction | null {
-    if (matchesKey(data, this.actionKeyBindings.copy)) {
-      return "copy";
-    }
-    if (matchesKey(data, this.actionKeyBindings.resume)) {
-      return "resume";
-    }
+    if (matchesKey(data, this.actionKeyBindings.copy)) return "copy";
+    if (matchesKey(data, this.actionKeyBindings.resume)) return "resume";
     return null;
   }
 
@@ -331,22 +311,15 @@ export class PromptHistorySelector implements Focusable {
   }
 
   private getVisibleResults(): PromptSearchResult[] {
-    if (this.results.length === 0) {
-      return [];
-    }
+    if (!this.results.length) return [];
 
-    const windowStart = Math.max(
-      0,
-      Math.min(
-        this.selectedIndex - Math.floor(this.maxVisible / 2),
-        this.results.length - this.maxVisible,
-      ),
-    );
-    const windowEnd = Math.min(
-      this.results.length,
-      windowStart + this.maxVisible,
-    );
-    return this.results.slice(windowStart, windowEnd);
+    // Center the selected item in the window
+    const half = Math.floor(this.maxVisible / 2);
+    const start = Math.max(0, Math.min(
+      this.selectedIndex - half,
+      this.results.length - this.maxVisible,
+    ));
+    return this.results.slice(start, start + this.maxVisible);
   }
 
   private getSessionGroup(
@@ -355,12 +328,10 @@ export class PromptHistorySelector implements Focusable {
     return resolvePromptHistorySessionGroup(entry, this.sessionContext);
   }
 
-  private defaultSessionGroup(): PromptHistorySessionGroup {
-    if (this.sessionContext.activeSessionFile) {
-      return "current-session";
-    }
-    return this.scope === "local" ? "same-cwd" : "other-cwd";
-  }
+  private defaultSessionGroup = (): PromptHistorySessionGroup =>
+    this.sessionContext.activeSessionFile
+      ? "current-session"
+      : this.scope === "local" ? "same-cwd" : "other-cwd";
 
   private scopeLabel(sessionGroup: PromptHistorySessionGroup): string {
     return formatPromptHistoryScopeLabel(this.scope, sessionGroup);
@@ -381,48 +352,30 @@ function highlightPositions(
   matchPositions: number[],
   highlight: (text: string) => string,
 ): string {
-  if (matchPositions.length === 0) {
-    return text;
-  }
-
+  if (!matchPositions.length) return text;
   const positions = new Set(matchPositions);
-  let result = "";
-  for (let index = 0; index < text.length; index += 1) {
-    const character = text.charAt(index);
-    result += positions.has(index) ? highlight(character) : character;
-  }
-  return result;
+  return [...text].map((c, i) => (positions.has(i) ? highlight(c) : c)).join("");
 }
+
+const SECTION_COLORS: Record<PromptHistorySessionGroup, string> = {
+  "current-session": "accent",
+  "same-cwd": "muted",
+  "other-cwd": "dim",
+};
 
 function formatSectionHeader(
   section: PromptHistoryResultSection,
   innerWidth: number,
   theme: PromptHistoryTheme,
 ): string {
-  const label = `${section.label} (${section.results.length})`;
-  const content = ` ${label} `;
-  const dashCount = Math.max(0, innerWidth - visibleWidth(content));
-  const styled = `${content}${"─".repeat(dashCount)}`;
-  return theme.fg(sectionColor(section.group), theme.bold(styled));
+  const content = ` ${section.label} (${section.results.length}) `;
+  const dashes = "─".repeat(Math.max(0, innerWidth - visibleWidth(content)));
+  return theme.fg(SECTION_COLORS[section.group], theme.bold(content + dashes));
 }
 
-const PROMPT_HISTORY_SECTION_COLORS: Record<PromptHistorySessionGroup, string> =
-  {
-    "current-session": "accent",
-    "same-cwd": "muted",
-    "other-cwd": "dim",
-  };
+const KEY_LABELS: Record<string, string> = {
+  enter: "Enter",
+  f2: "F2",
+};
 
-function sectionColor(group: PromptHistorySessionGroup): string {
-  return PROMPT_HISTORY_SECTION_COLORS[group];
-}
-
-function formatKeyLabel(key: string): string {
-  if (key === "enter") {
-    return "Enter";
-  }
-  if (key === "f2") {
-    return "F2";
-  }
-  return key;
-}
+const formatKeyLabel = (key: string): string => KEY_LABELS[key] ?? key;

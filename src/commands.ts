@@ -9,6 +9,7 @@ import type { PromptHistoryConfig } from "./config";
 import { expandHomePath, resolvePromptHistoryConfig } from "./config";
 import { PromptHistoryDb } from "./db";
 import {
+  type IndexerAction,
   type IndexerResult,
   discoverSessionFiles,
   filterSessionFilesByCwd,
@@ -149,6 +150,11 @@ function normalizeScopeArg(value: string): SearchScope {
   return normalized === "global" || normalized === "all" ? "global" : "local";
 }
 
+const supportsPromptHistorySessionControl = (
+  ctx: PromptHistoryOpenContext,
+): ctx is ExtensionCommandContext =>
+  typeof ctx.fork === "function" && typeof ctx.switchSession === "function";
+
 export async function openPromptHistory(
   ctx: PromptHistoryOpenContext,
   initialScope: SearchScope,
@@ -195,7 +201,7 @@ export async function openPromptHistory(
     });
 
   try {
-    await refreshIndex(db, ctx, "global", false);
+    await refreshIndex(db, ctx, initialScope, false);
     const initialResults = await searchWithCurrentContext(
       initialQuery,
       initialScope,
@@ -305,30 +311,15 @@ async function queuePromptHistoryResume(
   ctx.ui.notify("Resume command ready. Press Enter to continue.", "info");
 }
 
-function supportsPromptHistorySessionControl(
-  ctx: PromptHistoryOpenContext,
-): ctx is ExtensionCommandContext {
-  return (
-    typeof ctx.fork === "function" && typeof ctx.switchSession === "function"
-  );
-}
-
 async function selectPromptHistoryResumeMode(
   ctx: PromptHistoryResumeSelectionContext,
 ): Promise<PromptHistoryResumeMode | null> {
-  if (typeof ctx.waitForIdle === "function") {
-    await ctx.waitForIdle();
-  }
-
+  await ctx.waitForIdle?.();
   const choice = await ctx.ui.select(
     "Resume session: fork from this point or restore the entire session?",
     [PROMPT_HISTORY_RESUME_CHOICES.fork, PROMPT_HISTORY_RESUME_CHOICES.restore],
   );
-  if (!choice) {
-    return null;
-  }
-
-  return choice === PROMPT_HISTORY_RESUME_CHOICES.restore ? "restore" : "fork";
+  return choice === PROMPT_HISTORY_RESUME_CHOICES.restore ? "restore" : choice ? "fork" : null;
 }
 
 async function performPromptHistoryResume(
@@ -343,94 +334,74 @@ async function performPromptHistoryResume(
     return;
   }
 
-  const activeSessionFile = getActiveSessionFile(ctx);
-  if (activeSessionFile !== request.sessionFile) {
+  // Fork mode: switch to session first if needed
+  if (getActiveSessionFile(ctx) !== request.sessionFile) {
     const switchResult = await ctx.switchSession(request.sessionFile);
-    if (switchResult.cancelled) {
-      return;
-    }
+    if (switchResult.cancelled) return;
   }
 
   const forkResult = (await ctx.fork(request.entryId ?? "")) as {
     cancelled: boolean;
     selectedText?: string;
   };
-  if (!forkResult.cancelled) {
-    const text = forkResult.selectedText ?? request.fallbackText;
-    if (text !== undefined) {
-      ctx.ui.setEditorText(text);
-    }
-    ctx.ui.notify(`Forked from ${request.scope} history`, "info");
-  }
+  if (forkResult.cancelled) return;
+
+  const text = forkResult.selectedText ?? request.fallbackText;
+  if (text !== undefined) ctx.ui.setEditorText(text);
+  ctx.ui.notify(`Forked from ${request.scope} history`, "info");
 }
 
-function createPromptHistoryResumeRequest(
+const createPromptHistoryResumeRequest = (
   selection: PromptHistorySelection,
   mode: PromptHistoryResumeMode,
-): PromptHistoryResumeRequest {
-  return {
-    mode,
-    scope: selection.scope,
-    sessionFile: selection.item.sessionFile,
-    entryId: selection.item.id,
-    fallbackText: selection.item.text,
-  };
-}
+): PromptHistoryResumeRequest => ({
+  mode,
+  scope: selection.scope,
+  sessionFile: selection.item.sessionFile,
+  entryId: selection.item.id,
+  fallbackText: selection.item.text,
+});
 
-function buildPromptHistoryResumeCommand(
-  request: PromptHistoryResumeRequest,
-): string {
-  const encoded = Buffer.from(JSON.stringify(request)).toString("base64url");
-  return `/${PROMPT_HISTORY_RESUME_COMMAND} ${encoded}`;
-}
+const buildPromptHistoryResumeCommand = (request: PromptHistoryResumeRequest): string =>
+  `/${PROMPT_HISTORY_RESUME_COMMAND} ${Buffer.from(JSON.stringify(request)).toString("base64url")}`;
 
 function parsePromptHistoryResumeRequest(
   args: string,
 ): PromptHistoryResumeRequest | null {
   const encoded = args.trim();
-  if (!encoded) {
-    return null;
-  }
+  if (!encoded) return null;
 
+  let parsed: Partial<PromptHistoryResumeRequest>;
   try {
-    const parsed = JSON.parse(
+    parsed = JSON.parse(
       Buffer.from(encoded, "base64url").toString("utf8"),
     ) as Partial<PromptHistoryResumeRequest>;
-    if (!parsed || typeof parsed !== "object") {
-      return null;
-    }
-    if (!isPromptHistoryScope(parsed.scope)) {
-      return null;
-    }
-    if (
-      typeof parsed.sessionFile !== "string" ||
-      parsed.sessionFile.length === 0
-    ) {
-      return null;
-    }
-    if (parsed.mode !== "fork" && parsed.mode !== "restore") {
-      return null;
-    }
-    if (
-      parsed.mode === "fork" &&
-      (typeof parsed.entryId !== "string" || parsed.entryId.length === 0)
-    ) {
-      return null;
-    }
-
-    return {
-      mode: parsed.mode,
-      scope: parsed.scope,
-      sessionFile: parsed.sessionFile,
-      entryId: parsed.entryId,
-      fallbackText:
-        typeof parsed.fallbackText === "string"
-          ? parsed.fallbackText
-          : undefined,
-    };
   } catch {
     return null;
   }
+
+  if (
+    !parsed ||
+    typeof parsed !== "object" ||
+    !isPromptHistoryScope(parsed.scope) ||
+    typeof parsed.sessionFile !== "string" ||
+    !parsed.sessionFile ||
+    (parsed.mode !== "fork" && parsed.mode !== "restore") ||
+    (parsed.mode === "fork" && typeof parsed.entryId !== "string")
+  ) {
+    return null;
+  }
+
+  return {
+    mode: parsed.mode,
+    scope: parsed.scope,
+    sessionFile: parsed.sessionFile,
+    entryId: parsed.entryId,
+    fallbackText:
+      typeof parsed.fallbackText === "string"
+        ? parsed.fallbackText
+        : undefined,
+  };
 }
 
 async function withPromptHistoryDb<T>(
@@ -484,54 +455,27 @@ async function refreshPromptHistoryIndex(
 ): Promise<IndexerResult[]> {
   const config = resolvePromptHistoryConfig({ cwd: ctx.cwd });
   const sessionFiles = discoverSessionFiles(expandHomePath(config.sessionDir));
-  const activeSessionFile = getActiveSessionFile(ctx);
-  const filteredFiles =
-    scope === "global"
-      ? sessionFiles
-      : filterSessionFilesByCwd(sessionFiles, ctx.cwd);
-  const orderedFiles = activeSessionFile
-    ? [
-        activeSessionFile,
-        ...filteredFiles.filter(
-          (sessionFile) => sessionFile !== activeSessionFile,
-        ),
-      ]
+  const filteredFiles = scope === "global"
+    ? sessionFiles
+    : filterSessionFilesByCwd(sessionFiles, ctx.cwd);
+
+  // Put active session first if it exists
+  const active = getActiveSessionFile(ctx);
+  const orderedFiles = active
+    ? [active, ...filteredFiles.filter((f) => f !== active)]
     : filteredFiles;
 
   return indexSessionFiles(db, orderedFiles, { forceRebuild });
 }
 
-function getActiveSessionFile(
+const getActiveSessionFile = (
   ctx: Partial<Pick<PromptHistoryIndexContext, "sessionManager">>,
-): string | undefined {
-  const manager = ctx.sessionManager as
-    | {
-        getSessionFile?: () => string | undefined;
-      }
-    | undefined;
-  return manager?.getSessionFile?.();
-}
+): string | undefined =>
+  (ctx.sessionManager as { getSessionFile?: () => string | undefined })?.getSessionFile?.();
 
-const INDEXER_ACTION_ORDER = [
-  "created",
-  "updated",
-  "rebuilt",
-  "skipped",
-] as const;
+const INDEXER_ACTIONS: IndexerAction[] = ["created", "updated", "rebuilt", "skipped"];
 
-function summarizeIndexerResults(results: IndexerResult[]): string {
-  const counts = {
-    created: 0,
-    updated: 0,
-    rebuilt: 0,
-    skipped: 0,
-  };
-
-  for (const result of results) {
-    counts[result.action] += 1;
-  }
-
-  return INDEXER_ACTION_ORDER.map(
-    (action) => `${counts[action]} ${action}`,
+const summarizeIndexerResults = (results: IndexerResult[]): string =>
+  INDEXER_ACTIONS.map(
+    (action) => `${results.filter((r) => r.action === action).length} ${action}`,
   ).join(" • ");
-}
