@@ -1,5 +1,9 @@
 # Prompt History Extension
 
+<p align="center">
+  <img src="images/banner.png" alt="pi-prompt-history hero banner" width="100%">
+</p>
+
 A Ctrl-R style prompt-history search extension for pi.
 
 ## What it does
