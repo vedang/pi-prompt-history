@@ -1,10 +1,8 @@
 import type { Focusable, TUI } from "@mariozechner/pi-tui";
 import {
-  DEFAULT_EDITOR_KEYBINDINGS,
-  EditorKeybindingsManager,
   Input,
   Key,
-  getEditorKeybindings,
+  getKeybindings,
   matchesKey,
   truncateToWidth,
   visibleWidth,
@@ -104,7 +102,7 @@ export class PromptHistorySelector implements Focusable {
   }
 
   handleInput(data: string): void {
-    const kb = getEditorKeybindings() ?? new EditorKeybindingsManager(DEFAULT_EDITOR_KEYBINDINGS);
+    const kb = getKeybindings();
 
     if (matchesKey(data, Key.tab) || matchesKey(data, Key.ctrl("r"))) {
       this.scope = togglePromptHistoryScope(this.scope);
@@ -113,10 +111,10 @@ export class PromptHistorySelector implements Focusable {
     }
 
     // Navigation
-    const navDelta = kb.matches(data, "selectUp") ? -1
-      : kb.matches(data, "selectDown") ? 1
-      : kb.matches(data, "selectPageUp") ? -this.maxVisible
-      : kb.matches(data, "selectPageDown") ? this.maxVisible
+    const navDelta = kb.matches(data, "tui.select.up") ? -1
+      : kb.matches(data, "tui.select.down") ? 1
+      : kb.matches(data, "tui.select.pageUp") ? -this.maxVisible
+      : kb.matches(data, "tui.select.pageDown") ? this.maxVisible
       : null;
     if (navDelta !== null) {
       this.moveSelection(navDelta);
@@ -131,7 +129,7 @@ export class PromptHistorySelector implements Focusable {
       return;
     }
 
-    if (kb.matches(data, "selectCancel")) {
+    if (kb.matches(data, "tui.select.cancel")) {
       this.onCancel();
       return;
     }
