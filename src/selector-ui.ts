@@ -40,6 +40,45 @@ const PROMPT_HISTORY_KEYBINDINGS = {
   selectCancel: ["tui.select.cancel", "selectCancel"],
 } as const;
 
+const NAVIGATION_BINDINGS = [
+  { names: PROMPT_HISTORY_KEYBINDINGS.selectUp, delta: -1, page: false },
+  { names: PROMPT_HISTORY_KEYBINDINGS.selectDown, delta: 1, page: false },
+  { names: PROMPT_HISTORY_KEYBINDINGS.selectPageUp, delta: -1, page: true },
+  { names: PROMPT_HISTORY_KEYBINDINGS.selectPageDown, delta: 1, page: true },
+] as const;
+
+const asPromptHistoryKeybindings = (
+  value: unknown,
+): PromptHistoryKeybindings | undefined =>
+  value && typeof (value as PromptHistoryKeybindings).matches === "function"
+    ? (value as PromptHistoryKeybindings)
+    : undefined;
+
+function instantiatePromptHistoryKeybindings(
+  ctor: unknown,
+  definitions: unknown,
+): PromptHistoryKeybindings | undefined {
+  if (typeof ctor !== "function" || !definitions) {
+    return undefined;
+  }
+
+  return new (ctor as new (definitions: unknown) => PromptHistoryKeybindings)(
+    definitions,
+  );
+}
+
+function getRuntimeKeybindings(
+  runtime: Record<string, unknown>,
+  getterName: "getKeybindings" | "getEditorKeybindings",
+): PromptHistoryKeybindings | undefined {
+  const getter = runtime[getterName];
+  if (typeof getter !== "function") {
+    return undefined;
+  }
+
+  return asPromptHistoryKeybindings((getter as () => unknown)());
+}
+
 function createManualKeybindings(): PromptHistoryKeybindings {
   return {
     matches(data: string, keybinding: string): boolean {
@@ -69,65 +108,28 @@ function createManualKeybindings(): PromptHistoryKeybindings {
 function resolveRuntimeKeybindings(): PromptHistoryKeybindings | undefined {
   const runtime = PiTui as Record<string, unknown>;
 
-  const getKeybindings = runtime.getKeybindings;
-  if (typeof getKeybindings === "function") {
-    const keybindings = (getKeybindings as () => unknown)();
-    if (
-      keybindings &&
-      typeof (keybindings as PromptHistoryKeybindings).matches === "function"
-    ) {
-      return keybindings as PromptHistoryKeybindings;
-    }
-  }
-
-  const getEditorKeybindings = runtime.getEditorKeybindings;
-  if (typeof getEditorKeybindings === "function") {
-    const keybindings = (getEditorKeybindings as () => unknown)();
-    if (
-      keybindings &&
-      typeof (keybindings as PromptHistoryKeybindings).matches === "function"
-    ) {
-      return keybindings as PromptHistoryKeybindings;
-    }
-  }
-
-  const KeybindingsManager = runtime.KeybindingsManager;
-  const TUI_KEYBINDINGS = runtime.TUI_KEYBINDINGS;
-  if (typeof KeybindingsManager === "function" && TUI_KEYBINDINGS) {
-    return new (
-      KeybindingsManager as new (
-        definitions: unknown,
-      ) => PromptHistoryKeybindings
-    )(TUI_KEYBINDINGS);
-  }
-
-  const EditorKeybindingsManager = runtime.EditorKeybindingsManager;
-  const DEFAULT_EDITOR_KEYBINDINGS = runtime.DEFAULT_EDITOR_KEYBINDINGS;
-  if (
-    typeof EditorKeybindingsManager === "function" &&
-    DEFAULT_EDITOR_KEYBINDINGS
-  ) {
-    return new (
-      EditorKeybindingsManager as new (
-        definitions: unknown,
-      ) => PromptHistoryKeybindings
-    )(DEFAULT_EDITOR_KEYBINDINGS);
-  }
-
-  return undefined;
+  return (
+    getRuntimeKeybindings(runtime, "getKeybindings") ??
+    getRuntimeKeybindings(runtime, "getEditorKeybindings") ??
+    instantiatePromptHistoryKeybindings(
+      runtime.KeybindingsManager,
+      runtime.TUI_KEYBINDINGS,
+    ) ??
+    instantiatePromptHistoryKeybindings(
+      runtime.EditorKeybindingsManager,
+      runtime.DEFAULT_EDITOR_KEYBINDINGS,
+    )
+  );
 }
 
 function resolvePromptHistoryKeybindings(
   explicit?: unknown,
 ): PromptHistoryKeybindings {
-  if (
-    explicit &&
-    typeof (explicit as PromptHistoryKeybindings).matches === "function"
-  ) {
-    return explicit as PromptHistoryKeybindings;
-  }
-
-  return resolveRuntimeKeybindings() ?? createManualKeybindings();
+  return (
+    asPromptHistoryKeybindings(explicit) ??
+    resolveRuntimeKeybindings() ??
+    createManualKeybindings()
+  );
 }
 
 function matchesPromptHistoryKeybinding(
@@ -222,31 +224,7 @@ export class PromptHistorySelector implements Focusable {
     }
 
     // Navigation
-    const navDelta = matchesPromptHistoryKeybinding(
-      this.keybindings,
-      data,
-      PROMPT_HISTORY_KEYBINDINGS.selectUp,
-    )
-      ? -1
-      : matchesPromptHistoryKeybinding(
-            this.keybindings,
-            data,
-            PROMPT_HISTORY_KEYBINDINGS.selectDown,
-          )
-        ? 1
-        : matchesPromptHistoryKeybinding(
-              this.keybindings,
-              data,
-              PROMPT_HISTORY_KEYBINDINGS.selectPageUp,
-            )
-          ? -this.maxVisible
-          : matchesPromptHistoryKeybinding(
-                this.keybindings,
-                data,
-                PROMPT_HISTORY_KEYBINDINGS.selectPageDown,
-              )
-            ? this.maxVisible
-            : null;
+    const navDelta = this.resolveNavigationDelta(data);
     if (navDelta !== null) {
       this.moveSelection(navDelta);
       return;
@@ -387,6 +365,18 @@ export class PromptHistorySelector implements Focusable {
 
   invalidate(): void {
     this.input.invalidate();
+  }
+
+  private resolveNavigationDelta(data: string): number | null {
+    for (const binding of NAVIGATION_BINDINGS) {
+      if (
+        matchesPromptHistoryKeybinding(this.keybindings, data, binding.names)
+      ) {
+        return binding.delta * (binding.page ? this.maxVisible : 1);
+      }
+    }
+
+    return null;
   }
 
   private moveSelection(delta: number): void {
