@@ -209,7 +209,7 @@ export async function openPromptHistory(
 
     const { PromptHistorySelector } = await loadSelector();
     const selection = await ctx.ui.custom<PromptHistorySelection | null>(
-      (tui, theme, _kb, done) =>
+      (tui, theme, keybindings, done) =>
         new PromptHistorySelector({
           tui,
           theme: theme as PromptHistorySelectorOptions["theme"],
@@ -219,6 +219,7 @@ export async function openPromptHistory(
           primaryAction: config.primaryAction,
           currentCwd: ctx.cwd,
           activeSessionFile: getActiveSessionFile(ctx),
+          keybindings,
           onSearch: searchWithCurrentContext,
           onSelect: (result) => done(result),
           onCancel: () => done(null),
@@ -319,7 +320,11 @@ async function selectPromptHistoryResumeMode(
     "Resume session: fork from this point or restore the entire session?",
     [PROMPT_HISTORY_RESUME_CHOICES.fork, PROMPT_HISTORY_RESUME_CHOICES.restore],
   );
-  return choice === PROMPT_HISTORY_RESUME_CHOICES.restore ? "restore" : choice ? "fork" : null;
+  return choice === PROMPT_HISTORY_RESUME_CHOICES.restore
+    ? "restore"
+    : choice
+      ? "fork"
+      : null;
 }
 
 async function performPromptHistoryResume(
@@ -362,7 +367,9 @@ const createPromptHistoryResumeRequest = (
   fallbackText: selection.item.text,
 });
 
-const buildPromptHistoryResumeCommand = (request: PromptHistoryResumeRequest): string =>
+const buildPromptHistoryResumeCommand = (
+  request: PromptHistoryResumeRequest,
+): string =>
   `/${PROMPT_HISTORY_RESUME_COMMAND} ${Buffer.from(JSON.stringify(request)).toString("base64url")}`;
 
 function parsePromptHistoryResumeRequest(
@@ -398,9 +405,7 @@ function parsePromptHistoryResumeRequest(
     sessionFile: parsed.sessionFile,
     entryId: parsed.entryId,
     fallbackText:
-      typeof parsed.fallbackText === "string"
-        ? parsed.fallbackText
-        : undefined,
+      typeof parsed.fallbackText === "string" ? parsed.fallbackText : undefined,
   };
 }
 
@@ -455,9 +460,10 @@ async function refreshPromptHistoryIndex(
 ): Promise<IndexerResult[]> {
   const config = resolvePromptHistoryConfig({ cwd: ctx.cwd });
   const sessionFiles = discoverSessionFiles(expandHomePath(config.sessionDir));
-  const filteredFiles = scope === "global"
-    ? sessionFiles
-    : filterSessionFilesByCwd(sessionFiles, ctx.cwd);
+  const filteredFiles =
+    scope === "global"
+      ? sessionFiles
+      : filterSessionFilesByCwd(sessionFiles, ctx.cwd);
 
   // Put active session first if it exists
   const active = getActiveSessionFile(ctx);
@@ -471,11 +477,19 @@ async function refreshPromptHistoryIndex(
 const getActiveSessionFile = (
   ctx: Partial<Pick<PromptHistoryIndexContext, "sessionManager">>,
 ): string | undefined =>
-  (ctx.sessionManager as { getSessionFile?: () => string | undefined })?.getSessionFile?.();
+  (
+    ctx.sessionManager as { getSessionFile?: () => string | undefined }
+  )?.getSessionFile?.();
 
-const INDEXER_ACTIONS: IndexerAction[] = ["created", "updated", "rebuilt", "skipped"];
+const INDEXER_ACTIONS: IndexerAction[] = [
+  "created",
+  "updated",
+  "rebuilt",
+  "skipped",
+];
 
 const summarizeIndexerResults = (results: IndexerResult[]): string =>
   INDEXER_ACTIONS.map(
-    (action) => `${results.filter((r) => r.action === action).length} ${action}`,
+    (action) =>
+      `${results.filter((r) => r.action === action).length} ${action}`,
   ).join(" • ");

@@ -1,10 +1,8 @@
+import * as PiTui from "@mariozechner/pi-tui";
 import type { Focusable, TUI } from "@mariozechner/pi-tui";
 import {
-  DEFAULT_EDITOR_KEYBINDINGS,
-  EditorKeybindingsManager,
   Input,
   Key,
-  getEditorKeybindings,
   matchesKey,
   truncateToWidth,
   visibleWidth,
@@ -30,6 +28,116 @@ interface PromptHistoryTheme {
   bold: (text: string) => string;
 }
 
+interface PromptHistoryKeybindings {
+  matches(data: string, keybinding: string): boolean;
+}
+
+const PROMPT_HISTORY_KEYBINDINGS = {
+  selectUp: ["tui.select.up", "selectUp"],
+  selectDown: ["tui.select.down", "selectDown"],
+  selectPageUp: ["tui.select.pageUp", "selectPageUp"],
+  selectPageDown: ["tui.select.pageDown", "selectPageDown"],
+  selectCancel: ["tui.select.cancel", "selectCancel"],
+} as const;
+
+function createManualKeybindings(): PromptHistoryKeybindings {
+  return {
+    matches(data: string, keybinding: string): boolean {
+      switch (keybinding) {
+        case "tui.select.up":
+        case "selectUp":
+          return matchesKey(data, "up");
+        case "tui.select.down":
+        case "selectDown":
+          return matchesKey(data, "down");
+        case "tui.select.pageUp":
+        case "selectPageUp":
+          return matchesKey(data, "pageUp");
+        case "tui.select.pageDown":
+        case "selectPageDown":
+          return matchesKey(data, "pageDown");
+        case "tui.select.cancel":
+        case "selectCancel":
+          return matchesKey(data, "escape") || matchesKey(data, "ctrl+c");
+        default:
+          return false;
+      }
+    },
+  };
+}
+
+function resolveRuntimeKeybindings(): PromptHistoryKeybindings | undefined {
+  const runtime = PiTui as Record<string, unknown>;
+
+  const getKeybindings = runtime.getKeybindings;
+  if (typeof getKeybindings === "function") {
+    const keybindings = (getKeybindings as () => unknown)();
+    if (
+      keybindings &&
+      typeof (keybindings as PromptHistoryKeybindings).matches === "function"
+    ) {
+      return keybindings as PromptHistoryKeybindings;
+    }
+  }
+
+  const getEditorKeybindings = runtime.getEditorKeybindings;
+  if (typeof getEditorKeybindings === "function") {
+    const keybindings = (getEditorKeybindings as () => unknown)();
+    if (
+      keybindings &&
+      typeof (keybindings as PromptHistoryKeybindings).matches === "function"
+    ) {
+      return keybindings as PromptHistoryKeybindings;
+    }
+  }
+
+  const KeybindingsManager = runtime.KeybindingsManager;
+  const TUI_KEYBINDINGS = runtime.TUI_KEYBINDINGS;
+  if (typeof KeybindingsManager === "function" && TUI_KEYBINDINGS) {
+    return new (
+      KeybindingsManager as new (
+        definitions: unknown,
+      ) => PromptHistoryKeybindings
+    )(TUI_KEYBINDINGS);
+  }
+
+  const EditorKeybindingsManager = runtime.EditorKeybindingsManager;
+  const DEFAULT_EDITOR_KEYBINDINGS = runtime.DEFAULT_EDITOR_KEYBINDINGS;
+  if (
+    typeof EditorKeybindingsManager === "function" &&
+    DEFAULT_EDITOR_KEYBINDINGS
+  ) {
+    return new (
+      EditorKeybindingsManager as new (
+        definitions: unknown,
+      ) => PromptHistoryKeybindings
+    )(DEFAULT_EDITOR_KEYBINDINGS);
+  }
+
+  return undefined;
+}
+
+function resolvePromptHistoryKeybindings(
+  explicit?: unknown,
+): PromptHistoryKeybindings {
+  if (
+    explicit &&
+    typeof (explicit as PromptHistoryKeybindings).matches === "function"
+  ) {
+    return explicit as PromptHistoryKeybindings;
+  }
+
+  return resolveRuntimeKeybindings() ?? createManualKeybindings();
+}
+
+function matchesPromptHistoryKeybinding(
+  keybindings: PromptHistoryKeybindings,
+  data: string,
+  names: readonly string[],
+): boolean {
+  return names.some((name) => keybindings.matches(data, name));
+}
+
 export interface PromptHistorySelection {
   item: PromptSearchResult;
   action: PromptHistoryAction;
@@ -47,6 +155,7 @@ export interface PromptHistorySelectorOptions {
   activeSessionFile?: string;
   initialQuery?: string;
   maxVisible?: number;
+  keybindings?: unknown;
   onSearch: (
     query: string,
     scope: SearchScope,
@@ -65,6 +174,7 @@ export class PromptHistorySelector implements Focusable {
   private readonly maxVisible: number;
   private readonly actionKeyBindings: PromptHistoryActionKeyBindings;
   private readonly sessionContext: PromptHistorySessionContext;
+  private readonly keybindings: PromptHistoryKeybindings;
 
   private query = "";
   private scope: SearchScope;
@@ -95,6 +205,7 @@ export class PromptHistorySelector implements Focusable {
     this.actionKeyBindings = resolvePromptHistoryActionKeyBindings(
       options.primaryAction,
     );
+    this.keybindings = resolvePromptHistoryKeybindings(options.keybindings);
     this.sessionContext = {
       currentCwd: options.currentCwd,
       activeSessionFile: options.activeSessionFile,
@@ -104,8 +215,6 @@ export class PromptHistorySelector implements Focusable {
   }
 
   handleInput(data: string): void {
-    const kb = getEditorKeybindings() ?? new EditorKeybindingsManager(DEFAULT_EDITOR_KEYBINDINGS);
-
     if (matchesKey(data, Key.tab) || matchesKey(data, Key.ctrl("r"))) {
       this.scope = togglePromptHistoryScope(this.scope);
       void this.refreshResults();
@@ -113,11 +222,31 @@ export class PromptHistorySelector implements Focusable {
     }
 
     // Navigation
-    const navDelta = kb.matches(data, "selectUp") ? -1
-      : kb.matches(data, "selectDown") ? 1
-      : kb.matches(data, "selectPageUp") ? -this.maxVisible
-      : kb.matches(data, "selectPageDown") ? this.maxVisible
-      : null;
+    const navDelta = matchesPromptHistoryKeybinding(
+      this.keybindings,
+      data,
+      PROMPT_HISTORY_KEYBINDINGS.selectUp,
+    )
+      ? -1
+      : matchesPromptHistoryKeybinding(
+            this.keybindings,
+            data,
+            PROMPT_HISTORY_KEYBINDINGS.selectDown,
+          )
+        ? 1
+        : matchesPromptHistoryKeybinding(
+              this.keybindings,
+              data,
+              PROMPT_HISTORY_KEYBINDINGS.selectPageUp,
+            )
+          ? -this.maxVisible
+          : matchesPromptHistoryKeybinding(
+                this.keybindings,
+                data,
+                PROMPT_HISTORY_KEYBINDINGS.selectPageDown,
+              )
+            ? this.maxVisible
+            : null;
     if (navDelta !== null) {
       this.moveSelection(navDelta);
       return;
@@ -127,11 +256,22 @@ export class PromptHistorySelector implements Focusable {
     const action = this.resolveAction(data);
     const selected = this.results[this.selectedIndex];
     if (action && selected) {
-      this.onSelect({ item: selected, action, scope: this.scope, query: this.query });
+      this.onSelect({
+        item: selected,
+        action,
+        scope: this.scope,
+        query: this.query,
+      });
       return;
     }
 
-    if (kb.matches(data, "selectCancel")) {
+    if (
+      matchesPromptHistoryKeybinding(
+        this.keybindings,
+        data,
+        PROMPT_HISTORY_KEYBINDINGS.selectCancel,
+      )
+    ) {
       this.onCancel();
       return;
     }
@@ -315,10 +455,13 @@ export class PromptHistorySelector implements Focusable {
 
     // Center the selected item in the window
     const half = Math.floor(this.maxVisible / 2);
-    const start = Math.max(0, Math.min(
-      this.selectedIndex - half,
-      this.results.length - this.maxVisible,
-    ));
+    const start = Math.max(
+      0,
+      Math.min(
+        this.selectedIndex - half,
+        this.results.length - this.maxVisible,
+      ),
+    );
     return this.results.slice(start, start + this.maxVisible);
   }
 
@@ -331,7 +474,9 @@ export class PromptHistorySelector implements Focusable {
   private defaultSessionGroup = (): PromptHistorySessionGroup =>
     this.sessionContext.activeSessionFile
       ? "current-session"
-      : this.scope === "local" ? "same-cwd" : "other-cwd";
+      : this.scope === "local"
+        ? "same-cwd"
+        : "other-cwd";
 
   private scopeLabel(sessionGroup: PromptHistorySessionGroup): string {
     return formatPromptHistoryScopeLabel(this.scope, sessionGroup);
@@ -354,7 +499,9 @@ function highlightPositions(
 ): string {
   if (!matchPositions.length) return text;
   const positions = new Set(matchPositions);
-  return [...text].map((c, i) => (positions.has(i) ? highlight(c) : c)).join("");
+  return [...text]
+    .map((c, i) => (positions.has(i) ? highlight(c) : c))
+    .join("");
 }
 
 const SECTION_COLORS: Record<PromptHistorySessionGroup, string> = {

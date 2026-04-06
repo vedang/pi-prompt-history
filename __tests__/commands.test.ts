@@ -180,6 +180,74 @@ test("openPromptHistory seeds the initial query from the current editor text", a
   assert.equal(selectorOptions?.primaryAction, "resume");
 });
 
+test("openPromptHistory forwards host keybindings into PromptHistorySelector", async () => {
+  let selectorOptions:
+    | {
+        keybindings?: unknown;
+      }
+    | undefined;
+  const hostKeybindings = { name: "host-keybindings" };
+
+  class RecordingPromptHistorySelector extends NoopPromptHistorySelector {
+    constructor(options: { keybindings?: unknown }) {
+      super();
+      selectorOptions = options;
+    }
+  }
+
+  const ctx = {
+    hasUI: true,
+    cwd: "/tmp/project-a",
+    sessionManager: {
+      getSessionFile: () => undefined,
+    },
+    ui: {
+      getEditorText: () => "",
+      custom: async (
+        factory: (
+          tui: { requestRender: () => void },
+          theme: ReturnType<typeof createTheme>,
+          keybindings: unknown,
+          done: (result: unknown) => void,
+        ) => unknown,
+      ) => {
+        await factory(
+          { requestRender: () => {} },
+          createTheme(),
+          hostKeybindings,
+          () => {},
+        );
+        return null;
+      },
+      notify: () => {},
+      setEditorText: () => {},
+    },
+  };
+
+  await openPromptHistory(ctx as never, "local", {
+    resolveConfig: () => ({
+      dbPath: "/tmp/history.db",
+      sessionDir: "/tmp/sessions",
+      maxResults: 20,
+      localMode: "cwd",
+      primaryAction: "copy",
+    }),
+    createDb: () => ({
+      close() {},
+      listRecentPrompts() {
+        return [];
+      },
+    }),
+    refreshIndex: async () => [],
+    search: async () => [],
+    loadSelector: async () => ({
+      PromptHistorySelector: RecordingPromptHistorySelector as never,
+    }),
+  });
+
+  assert.equal(selectorOptions?.keybindings, hostKeybindings);
+});
+
 test("openPromptHistory prefills an internal resume command when session controls are unavailable", async () => {
   const editorTexts: string[] = [];
   const notifications: string[] = [];
