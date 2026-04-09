@@ -110,6 +110,23 @@ export async function searchPrompts(
   return scoredCandidates.slice(0, limit);
 }
 
+/**
+ * Convert a UTF-16 code-unit offset (from String.indexOf) to a code-point
+ * offset (compatible with [...text] iteration). For BMP-only text these are
+ * identical; they diverge for characters outside the BMP (emoji, rare CJK).
+ */
+const utf16ToCodePointOffset = (text: string, utf16Offset: number): number => {
+  let codePointIndex = 0;
+  let utf16Index = 0;
+  while (utf16Index < utf16Offset && utf16Index < text.length) {
+    // If this is a high surrogate, skip the next code unit (low surrogate)
+    const cp = text.codePointAt(utf16Index) ?? 0;
+    utf16Index += cp > 0xffff ? 2 : 1;
+    codePointIndex++;
+  }
+  return codePointIndex;
+};
+
 const scoreExactSubstringMatch = (
   text: string,
   query: string,
@@ -120,9 +137,15 @@ const scoreExactSubstringMatch = (
     return null;
   }
 
+  const codePointStart = utf16ToCodePointOffset(lowerText, start);
+  // query.length is in UTF-16 code units, but for exact substring matches
+  // the matched text and query have the same code unit count, so we can
+  // use [...query].length for the code-point span.
+  const codePointLength = [...query].length;
+
   const matchPositions = Array.from(
-    { length: query.length },
-    (_, index) => start + index,
+    { length: codePointLength },
+    (_, index) => codePointStart + index,
   );
 
   const startBonus = Math.max(0, 256 - start);
@@ -149,7 +172,7 @@ const scoreFuzzyMatch = (text: string, query: string): FuzzyMatch | null => {
       return null;
     }
 
-    matchPositions.push(foundIndex);
+    matchPositions.push(utf16ToCodePointOffset(lowerText, foundIndex));
 
     if (foundIndex === lastMatch + 1) {
       score += 75;
