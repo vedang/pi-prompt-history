@@ -478,8 +478,14 @@ function boxLine(
   innerWidth: number,
   border: (text: string) => string,
 ): string {
-  const padding = Math.max(0, innerWidth - visibleWidth(content));
-  return `${border("│")}${content}${" ".repeat(padding)}${border("│")}`;
+  const visible = visibleWidth(content);
+  const padding = Math.max(0, innerWidth - visible);
+  // If the content's visible width exceeds innerWidth (e.g., Input component
+  // rendering with ANSI cursor sequences), re-truncate to fit.
+  const safeContent =
+    visible > innerWidth ? truncateToWidth(content, innerWidth) : content;
+  const safePadding = Math.max(0, innerWidth - visibleWidth(safeContent));
+  return `${border("│")}${safeContent}${" ".repeat(safePadding)}${border("│")}`;
 }
 
 function highlightPositions(
