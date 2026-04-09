@@ -304,12 +304,15 @@ async function queuePromptHistoryResume(
     return;
   }
 
-  ctx.ui.setEditorText(
-    buildPromptHistoryResumeCommand(
-      createPromptHistoryResumeRequest(selection, mode),
-    ),
+  const request = createPromptHistoryResumeRequest(selection, mode);
+  ctx.ui.setEditorText(buildPromptHistoryResumeCommand(request));
+
+  const actionLabel =
+    mode === "restore" ? "Restore full session" : "Fork from selected prompt";
+  ctx.ui.notify(
+    `${actionLabel}. Press Enter to continue, or Esc to cancel.`,
+    "info",
   );
-  ctx.ui.notify("Resume command ready. Press Enter to continue.", "info");
 }
 
 async function selectPromptHistoryResumeMode(
