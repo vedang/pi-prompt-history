@@ -32,8 +32,7 @@ test("prompt-history scaffold files exist", () => {
   }
 });
 
-test("index.ts delegates prompt-history setup through commands + config modules", () => {
+test("index.ts delegates prompt-history setup through commands module", () => {
   const source = readFileSync(join(extensionDir, "src/index.ts"), "utf-8");
   assert.match(source, /registerPromptHistoryCommands/);
-  assert.match(source, /initializePromptHistoryConfig/);
 });

@@ -2,7 +2,6 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 
 export const DEFAULT_HISTORY_DB_PATH =
   "~/.pi/agent/prompt-history/history.db" as const;
@@ -49,10 +48,6 @@ export function expandHomePath(inputPath: string): string {
   }
 
   return resolve(inputPath.replace(/^~(?=$|\/)/, homedir()));
-}
-
-export function initializePromptHistoryConfig(_ctx?: ExtensionContext): void {
-  // Reserved for future user/project config hydration.
 }
 
 export function resolvePromptHistoryConfig(

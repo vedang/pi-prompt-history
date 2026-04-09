@@ -2,7 +2,7 @@ import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 import type { IndexedSessionMetadata, PromptHistoryDb } from "./db";
-import type { ParsedSession, ParsedSessionPrompt } from "./parser";
+import type { ParsedSessionPrompt } from "./parser";
 import { parseSessionFile } from "./parser";
 
 export type IndexerAction = "created" | "updated" | "rebuilt" | "skipped";
@@ -20,34 +20,6 @@ export interface IndexSessionFileOptions {
 interface SessionFileStats {
   size: number;
   mtimeMs: number;
-}
-
-export async function indexSession(
-  db: PromptHistoryDb,
-  session: ParsedSession,
-): Promise<IndexerResult> {
-  const indexedAtMs = Date.now();
-  db.upsertSession({
-    sessionFile: session.file,
-    cwd: session.cwd,
-    sessionName: session.sessionName,
-    indexedMtimeMs: 0,
-    indexedSizeBytes: 0,
-    indexedPromptCount: session.prompts.length,
-    lastIndexedAtMs: indexedAtMs,
-  });
-
-  const indexedPrompts = indexPrompts(
-    db,
-    session.prompts,
-    session.sessionName,
-    indexedAtMs,
-  );
-  return createIndexerResult(
-    indexedPrompts > 0 ? "updated" : "skipped",
-    indexedPrompts,
-    session.file,
-  );
 }
 
 export async function indexSessionFile(
