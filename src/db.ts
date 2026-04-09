@@ -82,15 +82,17 @@ const PROMPT_SELECT_COLUMNS =
   "entry_id AS id, session_file, session_name, preview, text, cwd, prompt_timestamp_ms";
 const PROMPT_ORDER_BY = "prompt_timestamp_ms DESC, ordinal_in_session DESC";
 
-const mapPromptRow = (row: PromptRow): PromptHistoryEntry => ({
-  id: row.id,
-  sessionFile: row.session_file,
-  sessionName: row.session_name ?? "",
-  preview: row.preview,
-  text: row.text,
-  cwd: row.cwd,
-  timestampMs: row.prompt_timestamp_ms,
-});
+function mapPromptRow(row: PromptRow): PromptHistoryEntry {
+  return {
+    id: row.id,
+    sessionFile: row.session_file,
+    sessionName: row.session_name ?? "",
+    preview: row.preview,
+    text: row.text,
+    cwd: row.cwd,
+    timestampMs: row.prompt_timestamp_ms,
+  };
+}
 
 export class PromptHistoryDb {
   private readonly db: Database;

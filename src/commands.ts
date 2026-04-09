@@ -36,9 +36,7 @@ type PromptHistoryDbLike = Pick<
 > &
   Partial<Pick<PromptHistoryDb, "listPromptCandidates">>;
 
-type PromptHistorySearchOptions = SearchOptions & {
-  limit: number;
-};
+type PromptHistorySearchOptions = SearchOptions & { limit: number };
 
 type PromptHistoryIndexContext = Pick<
   ExtensionContext,
@@ -150,10 +148,13 @@ function normalizeScopeArg(value: string): SearchScope {
   return normalized === "global" || normalized === "all" ? "global" : "local";
 }
 
-const supportsPromptHistorySessionControl = (
+function supportsPromptHistorySessionControl(
   ctx: PromptHistoryOpenContext,
-): ctx is ExtensionCommandContext =>
-  typeof ctx.fork === "function" && typeof ctx.switchSession === "function";
+): ctx is ExtensionCommandContext {
+  return (
+    typeof ctx.fork === "function" && typeof ctx.switchSession === "function"
+  );
+}
 
 export async function openPromptHistory(
   ctx: PromptHistoryOpenContext,
@@ -359,21 +360,24 @@ async function performPromptHistoryResume(
   ctx.ui.notify(`Forked from ${request.scope} history`, "info");
 }
 
-const createPromptHistoryResumeRequest = (
+function createPromptHistoryResumeRequest(
   selection: PromptHistorySelection,
   mode: PromptHistoryResumeMode,
-): PromptHistoryResumeRequest => ({
-  mode,
-  scope: selection.scope,
-  sessionFile: selection.item.sessionFile,
-  entryId: selection.item.id,
-  fallbackText: selection.item.text,
-});
+): PromptHistoryResumeRequest {
+  return {
+    mode,
+    scope: selection.scope,
+    sessionFile: selection.item.sessionFile,
+    entryId: selection.item.id,
+    fallbackText: selection.item.text,
+  };
+}
 
-const buildPromptHistoryResumeCommand = (
+function buildPromptHistoryResumeCommand(
   request: PromptHistoryResumeRequest,
-): string =>
-  `/${PROMPT_HISTORY_RESUME_COMMAND} ${Buffer.from(JSON.stringify(request)).toString("base64url")}`;
+): string {
+  return `/${PROMPT_HISTORY_RESUME_COMMAND} ${Buffer.from(JSON.stringify(request)).toString("base64url")}`;
+}
 
 function parsePromptHistoryResumeRequest(
   args: string,
@@ -475,12 +479,13 @@ async function refreshPromptHistoryIndex(
   return indexSessionFiles(db, orderedFiles, { forceRebuild });
 }
 
-const getActiveSessionFile = (
+function getActiveSessionFile(
   ctx: Partial<Pick<PromptHistoryIndexContext, "sessionManager">>,
-): string | undefined =>
-  (
+): string | undefined {
+  return (
     ctx.sessionManager as { getSessionFile?: () => string | undefined }
   )?.getSessionFile?.();
+}
 
 const INDEXER_ACTIONS: IndexerAction[] = [
   "created",
@@ -489,8 +494,9 @@ const INDEXER_ACTIONS: IndexerAction[] = [
   "skipped",
 ];
 
-const summarizeIndexerResults = (results: IndexerResult[]): string =>
-  INDEXER_ACTIONS.map(
+function summarizeIndexerResults(results: IndexerResult[]): string {
+  return INDEXER_ACTIONS.map(
     (action) =>
       `${results.filter((r) => r.action === action).length} ${action}`,
   ).join(" • ");
+}

@@ -17,12 +17,7 @@ export interface PromptSearchResult extends PromptHistoryEntry {
   matchPositions: number[];
 }
 
-interface SubstringMatch {
-  score: number;
-  matchPositions: number[];
-}
-
-interface FuzzyMatch {
+interface MatchResult {
   score: number;
   matchPositions: number[];
 }
@@ -130,7 +125,7 @@ const utf16ToCodePointOffset = (text: string, utf16Offset: number): number => {
 const scoreExactSubstringMatch = (
   text: string,
   query: string,
-): SubstringMatch | null => {
+): MatchResult | null => {
   const lowerText = text.toLowerCase();
   const start = lowerText.indexOf(query);
   if (start < 0) {
@@ -157,7 +152,7 @@ const scoreExactSubstringMatch = (
   };
 };
 
-const scoreFuzzyMatch = (text: string, query: string): FuzzyMatch | null => {
+const scoreFuzzyMatch = (text: string, query: string): MatchResult | null => {
   const lowerText = text.toLowerCase();
   const lowerQuery = query.toLowerCase();
 

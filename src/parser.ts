@@ -187,11 +187,7 @@ export async function parseSessionFile(
     }
 
     const parentId =
-      typeof parsed.parentId === "string"
-        ? parsed.parentId
-        : parsed.parentId === null
-          ? null
-          : null;
+      typeof parsed.parentId === "string" ? parsed.parentId : null;
 
     const promptTimestampMs = parsePromptTimestampMs(
       parsed.timestamp,

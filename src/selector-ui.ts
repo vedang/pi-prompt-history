@@ -47,12 +47,14 @@ const NAVIGATION_BINDINGS = [
   { names: PROMPT_HISTORY_KEYBINDINGS.selectPageDown, delta: 1, page: true },
 ] as const;
 
-const asPromptHistoryKeybindings = (
+function asPromptHistoryKeybindings(
   value: unknown,
-): PromptHistoryKeybindings | undefined =>
-  value && typeof (value as PromptHistoryKeybindings).matches === "function"
+): PromptHistoryKeybindings | undefined {
+  return value &&
+    typeof (value as PromptHistoryKeybindings).matches === "function"
     ? (value as PromptHistoryKeybindings)
     : undefined;
+}
 
 function instantiatePromptHistoryKeybindings(
   ctor: unknown,
@@ -521,4 +523,6 @@ const KEY_LABELS: Record<string, string> = {
   f2: "F2",
 };
 
-const formatKeyLabel = (key: string): string => KEY_LABELS[key] ?? key;
+function formatKeyLabel(key: string): string {
+  return KEY_LABELS[key] ?? key;
+}

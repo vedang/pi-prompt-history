@@ -97,82 +97,67 @@ export function discoverSessionFiles(sessionDir: string): string[] {
   return results.sort();
 }
 
-/**
- * Filter session files to those matching the given cwd.
- * Queries the DB for session metadata instead of reading file headers.
- */
-export const filterSessionFilesByCwd = (
+export function filterSessionFilesByCwd(
   db: PromptHistoryDb,
   cwd: string,
-): string[] => db.listSessionFilesByCwd(cwd);
+): string[] {
+  return db.listSessionFilesByCwd(cwd);
+}
 
-const walkEntries = (rootDir: string): string[] => {
+function walkEntries(rootDir: string): string[] {
   try {
     const entries = readdirSync(rootDir, { withFileTypes: true });
     return entries.flatMap((entry) => {
       const path = join(rootDir, entry.name);
-      if (entry.isDirectory()) {
-        return walkEntries(path);
-      }
-      return [path];
+      return entry.isDirectory() ? walkEntries(path) : [path];
     });
   } catch {
     return [];
   }
-};
+}
 
-const createIndexerResult = (
+function createIndexerResult(
   action: IndexerAction,
   indexedPrompts: number,
   sessionFile: string,
-): IndexerResult => ({
-  action,
-  indexedPrompts,
-  sessionFile,
-});
+): IndexerResult {
+  return { action, indexedPrompts, sessionFile };
+}
 
-const isSessionFileUnchanged = (
+function isSessionFileUnchanged(
   existingSession: IndexedSessionMetadata | null,
   fileStats: SessionFileStats,
   forceRebuild = false,
-): boolean => {
+): boolean {
   return Boolean(
     !forceRebuild &&
       existingSession &&
       existingSession.indexedSizeBytes === fileStats.size &&
       existingSession.indexedMtimeMs === fileStats.mtimeMs,
   );
-};
+}
 
-const shouldRebuildSessionFile = (
-  existingSession: IndexedSessionMetadata,
-  fileStats: SessionFileStats,
-  forceRebuild = false,
-): boolean => {
-  return forceRebuild || fileStats.size < existingSession.indexedSizeBytes;
-};
-
-const getIndexAction = (
+function getIndexAction(
   existingSession: IndexedSessionMetadata | null,
   fileStats: SessionFileStats,
   forceRebuild = false,
-): Exclude<IndexerAction, "skipped"> => {
+): Exclude<IndexerAction, "skipped"> {
   if (existingSession === null) {
     return "created";
   }
 
-  return shouldRebuildSessionFile(existingSession, fileStats, forceRebuild)
+  return forceRebuild || fileStats.size < existingSession.indexedSizeBytes
     ? "rebuilt"
     : "updated";
-};
+}
 
-const indexPrompts = (
+function indexPrompts(
   db: PromptHistoryDb,
   prompts: ParsedSessionPrompt[],
   sessionName: string,
   indexedAtMs: number,
-): number =>
-  db.insertPrompts(
+): number {
+  return db.insertPrompts(
     prompts.map((prompt) => ({
       sessionFile: prompt.sessionFile,
       entryId: prompt.entryId,
@@ -187,19 +172,16 @@ const indexPrompts = (
     })),
     indexedAtMs,
   );
+}
 
-const normalizeIndexedMtimeMs = (mtimeMs: number): number => {
-  return Math.trunc(mtimeMs);
-};
-
-const statSessionFile = (path: string): SessionFileStats | null => {
+function statSessionFile(path: string): SessionFileStats | null {
   try {
     const stats = statSync(path);
     return {
       size: stats.size,
-      mtimeMs: normalizeIndexedMtimeMs(stats.mtimeMs),
+      mtimeMs: Math.trunc(stats.mtimeMs),
     };
   } catch {
     return null;
   }
-};
+}
