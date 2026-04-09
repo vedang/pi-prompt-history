@@ -6,7 +6,6 @@
     "@biomejs/biome",
     "@vitest/coverage-v8",
     "jscpd",
-    "tsx",
     "vitest"
   ],
   "ignoreBinaries": ["make"]

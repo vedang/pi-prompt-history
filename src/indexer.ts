@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 import type { IndexedSessionMetadata, PromptHistoryDb } from "./db";
@@ -125,14 +125,14 @@ export function discoverSessionFiles(sessionDir: string): string[] {
   return results.sort();
 }
 
-export function filterSessionFilesByCwd(
-  sessionFiles: string[],
+/**
+ * Filter session files to those matching the given cwd.
+ * Queries the DB for session metadata instead of reading file headers.
+ */
+export const filterSessionFilesByCwd = (
+  db: PromptHistoryDb,
   cwd: string,
-): string[] {
-  return sessionFiles.filter((sessionFile) => {
-    return readSessionHeaderCwd(sessionFile) === cwd;
-  });
-}
+): string[] => db.listSessionFilesByCwd(cwd);
 
 const walkEntries = (rootDir: string): string[] => {
   try {
@@ -146,24 +146,6 @@ const walkEntries = (rootDir: string): string[] => {
     });
   } catch {
     return [];
-  }
-};
-
-const readSessionHeaderCwd = (sessionFile: string): string | undefined => {
-  try {
-    const firstLine = readFileSync(sessionFile, "utf-8")
-      .split("\n", 1)[0]
-      ?.trim();
-    if (!firstLine) {
-      return undefined;
-    }
-    const header = JSON.parse(firstLine) as { type?: unknown; cwd?: unknown };
-    if (header.type !== "session" || typeof header.cwd !== "string") {
-      return undefined;
-    }
-    return header.cwd;
-  } catch {
-    return undefined;
   }
 };
 

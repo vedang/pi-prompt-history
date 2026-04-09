@@ -64,7 +64,7 @@ format: ## Format project files with Biome
 .PHONY: test-unit
 test-unit:
 	@if [ -n "$(strip $(TEST_FILES_UNIT))" ]; then \
-		bunx tsx --test $(TEST_FILES_UNIT); \
+		bun test $(TEST_FILES_UNIT); \
 	else \
 		echo "No unit tests found under __tests__; skipping"; \
 	fi
@@ -72,7 +72,7 @@ test-unit:
 .PHONY: test-llm
 test-llm:
 	@if [ -n "$(strip $(TEST_FILES_LLM))" ]; then \
-		bunx tsx --test $(TEST_FILES_LLM); \
+		bun test $(TEST_FILES_LLM); \
 	else \
 		echo "No LLM tests found under __tests__/llm; skipping"; \
 	fi
@@ -80,7 +80,7 @@ test-llm:
 .PHONY: test-integration
 test-integration:
 	@if [ -n "$(strip $(TEST_FILES_INTEGRATION))" ]; then \
-		bunx tsx --test $(TEST_FILES_INTEGRATION); \
+		bun test $(TEST_FILES_INTEGRATION); \
 	else \
 		echo "No integration tests found under __tests__/integration; skipping"; \
 	fi

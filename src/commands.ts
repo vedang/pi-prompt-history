@@ -461,9 +461,7 @@ async function refreshPromptHistoryIndex(
   const config = resolvePromptHistoryConfig({ cwd: ctx.cwd });
   const sessionFiles = discoverSessionFiles(expandHomePath(config.sessionDir));
   const filteredFiles =
-    scope === "global"
-      ? sessionFiles
-      : filterSessionFilesByCwd(sessionFiles, ctx.cwd);
+    scope === "global" ? sessionFiles : filterSessionFilesByCwd(db, ctx.cwd);
 
   // Put active session first if it exists
   const active = getActiveSessionFile(ctx);
