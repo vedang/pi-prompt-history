@@ -97,11 +97,30 @@ export function discoverSessionFiles(sessionDir: string): string[] {
   return results.sort();
 }
 
-export function filterSessionFilesByCwd(
-  db: PromptHistoryDb,
+/**
+ * Convert a cwd (e.g. "/Users/nejo/foo") into the session directory name
+ * used by pi (e.g. "--Users-nejo-foo--").
+ *
+ * The convention is: strip the leading "/", replace all "/" with "-",
+ * then wrap with "--" on both sides.
+ */
+function cwdToSessionDirName(cwd: string): string {
+  const stripped = cwd.startsWith("/") ? cwd.slice(1) : cwd;
+  return `--${stripped.replace(/\//g, "-")}--`;
+}
+
+/**
+ * Discover session files from the filesystem for a specific cwd.
+ * Uses the pi session directory naming convention to scan only the
+ * relevant subdirectory, avoiding a full tree walk.
+ */
+export function discoverSessionFilesByCwd(
+  sessionDir: string,
   cwd: string,
 ): string[] {
-  return db.listSessionFilesByCwd(cwd);
+  const dirName = cwdToSessionDirName(cwd);
+  const cwdDir = join(sessionDir, dirName);
+  return discoverSessionFiles(cwdDir);
 }
 
 function walkEntries(rootDir: string): string[] {

@@ -12,7 +12,7 @@ import {
   type IndexerAction,
   type IndexerResult,
   discoverSessionFiles,
-  filterSessionFilesByCwd,
+  discoverSessionFilesByCwd,
   indexSessionFiles,
 } from "./indexer";
 import {
@@ -466,9 +466,15 @@ async function refreshPromptHistoryIndex(
   forceRebuild: boolean,
 ): Promise<IndexerResult[]> {
   const config = resolvePromptHistoryConfig({ cwd: ctx.cwd });
-  const sessionFiles = discoverSessionFiles(expandHomePath(config.sessionDir));
+  const sessionDir = expandHomePath(config.sessionDir);
+
+  // For local scope, discover files from the filesystem for the current cwd.
+  // This ensures new sessions that haven't been indexed yet are found,
+  // not just sessions already in the DB.
   const filteredFiles =
-    scope === "global" ? sessionFiles : filterSessionFilesByCwd(db, ctx.cwd);
+    scope === "global"
+      ? discoverSessionFiles(sessionDir)
+      : discoverSessionFilesByCwd(sessionDir, ctx.cwd);
 
   // Put active session first if it exists
   const active = getActiveSessionFile(ctx);
