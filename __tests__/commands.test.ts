@@ -248,6 +248,81 @@ test("openPromptHistory forwards host keybindings into PromptHistorySelector", a
   assert.equal(selectorOptions?.keybindings, hostKeybindings);
 });
 
+test("openPromptHistory refreshes scope-specific index before searching after a scope toggle", async () => {
+  const events: string[] = [];
+  let onSearch:
+    | ((query: string, scope: "local" | "global") => Promise<unknown>)
+    | undefined;
+
+  class RecordingPromptHistorySelector extends NoopPromptHistorySelector {
+    constructor(options: {
+      onSearch: (query: string, scope: "local" | "global") => Promise<unknown>;
+    }) {
+      super();
+      onSearch = options.onSearch;
+    }
+  }
+
+  const ctx = {
+    hasUI: true,
+    cwd: "/tmp/project-a",
+    sessionManager: {
+      getSessionFile: () => undefined,
+    },
+    ui: {
+      getEditorText: () => "",
+      custom: async (
+        factory: (
+          tui: { requestRender: () => void },
+          theme: ReturnType<typeof createTheme>,
+          keybindings: unknown,
+          done: (result: unknown) => void,
+        ) => unknown,
+      ) => {
+        await factory({ requestRender: () => {} }, createTheme(), {}, () => {});
+        await onSearch?.("", "global");
+        return null;
+      },
+      notify: () => {},
+      setEditorText: () => {},
+    },
+  };
+
+  await openPromptHistory(ctx as never, "local", {
+    resolveConfig: () => ({
+      dbPath: "/tmp/history.db",
+      sessionDir: "/tmp/sessions",
+      maxResults: 20,
+      localMode: "cwd",
+      primaryAction: "copy",
+    }),
+    createDb: () => ({
+      close() {},
+      listRecentPrompts() {
+        return [];
+      },
+    }),
+    refreshIndex: async (_db, _ctx, scope) => {
+      events.push(`refresh:${scope}`);
+      return [];
+    },
+    search: async (_db, options) => {
+      events.push(`search:${options.scope}`);
+      return [];
+    },
+    loadSelector: async () => ({
+      PromptHistorySelector: RecordingPromptHistorySelector as never,
+    }),
+  });
+
+  assert.deepEqual(events, [
+    "refresh:local",
+    "search:local",
+    "refresh:global",
+    "search:global",
+  ]);
+});
+
 test("openPromptHistory prefills an internal resume command when session controls are unavailable", async () => {
   const editorTexts: string[] = [];
   const notifications: string[] = [];

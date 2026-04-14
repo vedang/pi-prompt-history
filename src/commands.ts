@@ -190,19 +190,35 @@ export async function openPromptHistory(
   const config = resolveConfig(ctx.cwd);
   const db = createDb(config);
   const initialQuery = ctx.ui.getEditorText();
+  const refreshedScopes = new Map<SearchScope, Promise<void>>();
+  const ensureScopeRefreshed = (scope: SearchScope): Promise<void> => {
+    const existing = refreshedScopes.get(scope);
+    if (existing) return existing;
+
+    const wrapped = refreshIndex(db, ctx, scope, false)
+      .then(() => {})
+      .catch((error) => {
+        refreshedScopes.delete(scope);
+        throw error;
+      });
+    refreshedScopes.set(scope, wrapped);
+    return wrapped;
+  };
+
   const searchWithCurrentContext = (
     query: string,
     scope: SearchScope,
   ): Promise<PromptSearchResult[]> =>
-    search(db, {
-      scope,
-      cwd: ctx.cwd,
-      query,
-      limit: config.maxResults,
-    });
+    ensureScopeRefreshed(scope).then(() =>
+      search(db, {
+        scope,
+        cwd: ctx.cwd,
+        query,
+        limit: config.maxResults,
+      }),
+    );
 
   try {
-    await refreshIndex(db, ctx, initialScope, false);
     const initialResults = await searchWithCurrentContext(
       initialQuery,
       initialScope,
