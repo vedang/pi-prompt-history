@@ -6,6 +6,16 @@
 
 A Ctrl-R style prompt-history search extension for pi.
 
+## Install
+
+```bash
+# Install globally
+pi install git:github.com/vedang/pi-prompt-history
+
+# Or install for just the current project
+pi install -l git:github.com/vedang/pi-prompt-history
+```
+
 ## What it does
 
 This extension indexes prior **user prompts** from pi session JSONL files and lets you
