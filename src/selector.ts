@@ -1,6 +1,6 @@
 import { basename } from "node:path";
 
-import type { KeyId } from "@mariozechner/pi-tui";
+import type { KeyId } from "@earendil-works/pi-tui";
 
 import type { PromptHistoryAction } from "./config";
 import type { PromptSearchResult, SearchScope } from "./search";

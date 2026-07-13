@@ -1,12 +1,12 @@
-import * as PiTui from "@mariozechner/pi-tui";
-import type { Focusable, KeyId, TUI } from "@mariozechner/pi-tui";
+import * as PiTui from "@earendil-works/pi-tui";
+import type { Focusable, KeyId, TUI } from "@earendil-works/pi-tui";
 import {
   Input,
   Key,
   matchesKey,
   truncateToWidth,
   visibleWidth,
-} from "@mariozechner/pi-tui";
+} from "@earendil-works/pi-tui";
 
 import type { PromptSearchResult, SearchScope } from "./search";
 import {
