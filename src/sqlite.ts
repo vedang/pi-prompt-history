@@ -43,10 +43,13 @@ type NativeStatement = {
   all(...parameters: SqliteParameter[]): unknown[];
 };
 
-type BunDatabase = {
+type NativeDatabase = {
   exec(sql: string): void;
   prepare(sql: string): NativeStatement;
   close(): void;
+};
+
+type BunDatabase = NativeDatabase & {
   transaction<Args extends unknown[], Result>(
     callback: (...args: Args) => Result,
   ): (...args: Args) => Result;
@@ -56,15 +59,16 @@ type BunSqliteModule = {
   Database: new (path: string, options: { create: boolean }) => BunDatabase;
 };
 
-type NodeDatabase = {
-  exec(sql: string): void;
-  prepare(sql: string): NativeStatement;
-  close(): void;
+type NodeSqliteModule = {
+  DatabaseSync: new (
+    path: string,
+    options: { open: boolean },
+  ) => NativeDatabase;
 };
 
-type NodeSqliteModule = {
-  DatabaseSync: new (path: string, options: { open: boolean }) => NodeDatabase;
-};
+type TransactionStrategy = <Args extends unknown[], Result>(
+  callback: (...args: Args) => Result,
+) => (...args: Args) => Result;
 
 const require = createRequire(import.meta.url);
 
@@ -96,8 +100,11 @@ class StatementAdapter implements SqliteStatement {
   }
 }
 
-class BunSqliteDatabase implements SqliteDatabase {
-  constructor(private readonly database: BunDatabase) {}
+class SqliteDatabaseAdapter implements SqliteDatabase {
+  constructor(
+    private readonly database: NativeDatabase,
+    private readonly transactionStrategy: TransactionStrategy,
+  ) {}
 
   exec(sql: string): void {
     this.database.exec(sql);
@@ -114,44 +121,27 @@ class BunSqliteDatabase implements SqliteDatabase {
   transaction<Args extends unknown[], Result>(
     callback: (...args: Args) => Result,
   ): (...args: Args) => Result {
-    return this.database.transaction(callback);
+    return this.transactionStrategy(callback);
   }
 }
 
-class NodeSqliteDatabase implements SqliteDatabase {
-  constructor(private readonly database: NodeDatabase) {}
-
-  exec(sql: string): void {
-    this.database.exec(sql);
-  }
-
-  prepare(sql: string): SqliteStatement {
-    return new StatementAdapter(this.database.prepare(sql));
-  }
-
-  close(): void {
-    this.database.close();
-  }
-
-  transaction<Args extends unknown[], Result>(
-    callback: (...args: Args) => Result,
-  ): (...args: Args) => Result {
-    return (...args: Args): Result => {
-      this.database.exec("BEGIN");
+function nodeTransaction(database: NativeDatabase): TransactionStrategy {
+  return (callback) =>
+    (...args) => {
+      database.exec("BEGIN");
       try {
         const result = callback(...args);
-        this.database.exec("COMMIT");
+        database.exec("COMMIT");
         return result;
       } catch (error) {
         try {
-          this.database.exec("ROLLBACK");
+          database.exec("ROLLBACK");
         } catch {
           // Preserve the original callback or commit error.
         }
         throw error;
       }
     };
-  }
 }
 
 function isMissingBunSqliteModule(error: unknown): boolean {
@@ -218,14 +208,14 @@ function loadNodeSqlite(): NodeSqliteModule {
 export function openSqliteDatabase(path: string): SqliteDatabase {
   const bunSqlite = loadBunSqlite();
   if (bunSqlite) {
-    return new BunSqliteDatabase(
-      new bunSqlite.Database(path, { create: true }),
+    const database = new bunSqlite.Database(path, { create: true });
+    return new SqliteDatabaseAdapter(database, (callback) =>
+      database.transaction(callback),
     );
   }
 
   const nodeSqlite = loadNodeSqlite();
   // Node has no `create` option: opening read/write creates a missing file.
-  return new NodeSqliteDatabase(
-    new nodeSqlite.DatabaseSync(path, { open: true }),
-  );
+  const database = new nodeSqlite.DatabaseSync(path, { open: true });
+  return new SqliteDatabaseAdapter(database, nodeTransaction(database));
 }
