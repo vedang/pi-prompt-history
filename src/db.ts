@@ -1,10 +1,9 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
-import { Database } from "bun:sqlite";
-
 import { expandHomePath } from "./config";
 import type { SearchScope } from "./search";
+import { type SqliteDatabase, openSqliteDatabase } from "./sqlite";
 
 /**
  * Database module for prompt history indexing.
@@ -95,12 +94,12 @@ function mapPromptRow(row: PromptRow): PromptHistoryEntry {
 }
 
 export class PromptHistoryDb {
-  private readonly db: Database;
+  private readonly db: SqliteDatabase;
 
   constructor(config: PromptHistoryDbConfig) {
     const dbPath = expandHomePath(config.path);
     mkdirSync(dirname(dbPath), { recursive: true });
-    this.db = new Database(dbPath, { create: true });
+    this.db = openSqliteDatabase(dbPath);
     this.db.exec("PRAGMA journal_mode = WAL");
     this.db.exec("PRAGMA foreign_keys = ON");
     this.prepareSchema();
